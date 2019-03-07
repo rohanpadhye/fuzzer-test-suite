@@ -7,7 +7,7 @@
 
 # Ensure that fuzzing engine, if defined, is valid
 FUZZING_ENGINE=${FUZZING_ENGINE:-"fsanitize_fuzzer"}
-POSSIBLE_FUZZING_ENGINE="libfuzzer afl coverage fsanitize_fuzzer hooks"
+POSSIBLE_FUZZING_ENGINE="libfuzzer afl afl_custom coverage fsanitize_fuzzer hooks"
 !(echo "$POSSIBLE_FUZZING_ENGINE" | grep -w "$FUZZING_ENGINE" > /dev/null) && \
   echo "USAGE: Error: If defined, FUZZING_ENGINE should be one of the following:
   $POSSIBLE_FUZZING_ENGINE. However, it was defined as $FUZZING_ENGINE" && exit 1
@@ -34,6 +34,12 @@ if [[ $FUZZING_ENGINE == "fsanitize_fuzzer" ]]; then
 elif [[ $FUZZING_ENGINE == "coverage" ]]; then
   export CFLAGS=${CFLAGS:-$COVERAGE_FLAGS}
   export CXXFLAGS=${CXXFLAGS:-$COVERAGE_FLAGS}
+elif [[ $FUZZING_ENGINE == "afl_custom" ]]; then
+  AFL_CUSTOM_FLAGS="-O2 -fno-omit-frame-pointer -gline-tables-only -fsanitize=address -fsanitize-address-use-after-scope"
+  export CFLAGS=${CFLAGS:-$AFL_CUSTOM_FLAGS}
+  export CXXFLAGS=${CXXFLAGS:-$AFL_CUSTOM_FLAGS}
+  export CC="$AFL_SRC/afl-clang-fast"
+  export CXX="$AFL_SRC/afl-clang-fast++"
 else
   export CFLAGS=${CFLAGS:-"$FUZZ_CXXFLAGS"}
   export CXXFLAGS=${CXXFLAGS:-"$FUZZ_CXXFLAGS"}
@@ -64,6 +70,12 @@ build_afl() {
   $CC $CFLAGS -c -w $AFL_SRC/llvm_mode/afl-llvm-rt.o.c
   $CXX $CXXFLAGS -std=c++11 -O2 -c ${LIBFUZZER_SRC}/afl/afl_driver.cpp -I$LIBFUZZER_SRC
   ar r $LIB_FUZZING_ENGINE afl_driver.o afl-llvm-rt.o.o
+  rm *.o
+}
+
+build_afl_custom() {
+  $CXX $CXXFLAGS -std=c++11 -O2 -c ${LIBFUZZER_SRC}/afl/afl_driver.cpp -I$LIBFUZZER_SRC
+  ar r $LIB_FUZZING_ENGINE afl_driver.o
   rm *.o
 }
 
