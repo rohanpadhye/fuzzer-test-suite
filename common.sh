@@ -35,7 +35,7 @@ elif [[ $FUZZING_ENGINE == "coverage" ]]; then
   export CFLAGS=${CFLAGS:-$COVERAGE_FLAGS}
   export CXXFLAGS=${CXXFLAGS:-$COVERAGE_FLAGS}
 elif [[ $FUZZING_ENGINE == "afl_custom" ]]; then
-  AFL_CUSTOM_FLAGS="-O2 -fno-omit-frame-pointer -gline-tables-only -fsanitize=address -fsanitize-address-use-after-scope"
+  AFL_CUSTOM_FLAGS="-O2 -fno-omit-frame-pointer -gline-tables-only"
   export CFLAGS=${CFLAGS:-$AFL_CUSTOM_FLAGS}
   export CXXFLAGS=${CXXFLAGS:-$AFL_CUSTOM_FLAGS}
   export CC="$AFL_SRC/afl-clang-fast"
