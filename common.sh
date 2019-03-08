@@ -74,7 +74,7 @@ build_afl() {
 }
 
 build_afl_custom() {
-  $CXX $CXXFLAGS -std=c++11 -O2 -c ${LIBFUZZER_SRC}/afl/afl_driver.cpp -I$LIBFUZZER_SRC
+  clang++ $CXXFLAGS -std=c++11 -O2 -c ${LIBFUZZER_SRC}/afl/afl_driver.cpp -I$LIBFUZZER_SRC
   ar r $LIB_FUZZING_ENGINE afl_driver.o
   rm *.o
 }
