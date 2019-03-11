@@ -1,0 +1,19 @@
+diff -ur libpng-1.2.56/pngread.c BUILD/pngread.c
+--- libpng-1.2.56/pngread.c	2015-12-17 13:57:06.000000000 +0000
++++ BUILD/pngread.c	2019-03-11 21:04:36.684122150 +0000
+@@ -17,6 +17,7 @@
+ #define PNG_INTERNAL
+ #define PNG_NO_PEDANTIC_WARNINGS
+ #include "png.h"
++#include "waypoints.h"
+ #ifdef PNG_READ_SUPPORTED
+ 
+ /* Create a PNG structure for reading, and allocate any memory needed. */
+@@ -380,6 +381,7 @@
+ 
+    for (;;)
+    {
++      AFL_WAYPOINTS_SET_STATE(png_ptr->mode);
+ #ifdef PNG_USE_LOCAL_ARRAYS
+       PNG_CONST PNG_IHDR;
+       PNG_CONST PNG_IDAT;
