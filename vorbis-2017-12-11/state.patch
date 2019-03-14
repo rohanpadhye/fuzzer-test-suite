@@ -1,0 +1,34 @@
+--- SRC/vorbis/lib/vorbisfile.c	2019-03-13 14:01:25.639946178 -0700
++++ BUILD/vorbis/lib/vorbisfile.c	2019-03-13 21:34:15.152764710 -0700
+@@ -28,6 +28,7 @@
+ 
+ #include "os.h"
+ #include "misc.h"
++#include "waypoints.h"
+ 
+ /* A 'chained bitstream' is a Vorbis bitstream that contains more than
+    one logical bitstream arranged end to end (the only form of Ogg
+@@ -680,6 +681,7 @@
+   /* handle one packet.  Try to fetch it from current stream state */
+   /* extract packets from page */
+   while(1){
++    AFL_WAYPOINTS_SET_STATE(vf->ready_state);
+ 
+     if(vf->ready_state==STREAMSET){
+       int ret=_make_decode_ready(vf);
+@@ -692,6 +694,7 @@
+       int hs=vorbis_synthesis_halfrate_p(vf->vi);
+ 
+       while(1) {
++        AFL_WAYPOINTS_SET_STATE(vf->ready_state);
+               ogg_packet op;
+               ogg_packet *op_ptr=(op_in?op_in:&op);
+         int result=ogg_stream_packetout(&vf->os,op_ptr);
+@@ -766,6 +769,7 @@
+       ogg_int64_t ret;
+ 
+       while(1){
++        AFL_WAYPOINTS_SET_STATE(vf->ready_state);
+         /* the loop is not strictly necessary, but there's no sense in
+            doing the extra checks of the larger loop for the common
+            case in a multiplexed bistream where the page is simply
