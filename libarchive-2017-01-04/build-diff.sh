@@ -4,6 +4,8 @@
 . $(dirname $0)/../custom-build.sh $1 $2
 . $(dirname $0)/../common.sh
 
+build_fuzzer
+
 export CFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CFLAGS"
 export CXXFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CXXFLAGS"
 
@@ -11,14 +13,12 @@ build_lib() {
   rm -rf BUILD
   cp -rf SRC BUILD
   (cd BUILD && patch -p1 < ../cur_diff.patch)
-  (cd BUILD/build && ./autogen.sh && cd .. && echo "Before configure: CC=$CC, CFLAGS=$CFLAGS, WAYPOINTS=$WAYPOINTS" && \
-	  ./configure --without-nettle WAYPOINTS="diff" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" && make -j $JOBS)
+  (cd BUILD/build && ./autogen.sh && cd .. && ./configure --without-nettle WAYPOINTS="diff" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" && make -j $JOBS)
 }
 
 get_git_revision https://github.com/libarchive/libarchive.git 51d7afd3644fdad725dd8faa7606b864fd125f88 SRC
 cp $(dirname $0)/cur_diff.patch .
 build_lib
-build_fuzzer
 
 if [[ $FUZZING_ENGINE == "hooks" ]]; then
   # Link ASan runtime so we can hook memcmp et al.
