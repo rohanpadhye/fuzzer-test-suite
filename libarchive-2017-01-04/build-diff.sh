@@ -6,7 +6,7 @@
 
 build_fuzzer
 
-if [ -z $DISABLE_TARGET_ARG]; then
+if [ -z $DISABLE_TARGET_ARG ]; then
 	export CFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CFLAGS"
 	export CXXFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CXXFLAGS"
 fi
