@@ -6,8 +6,10 @@
 
 build_fuzzer
 
-export CFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CFLAGS"
-export CXXFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CXXFLAGS"
+if [ -z $DISABLE_TARGET_ARG ]; then
+	export CFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CFLAGS"
+	export CXXFLAGS="-target_locations=$(dirname $0)/cur_targets.txt $CXXFLAGS"
+fi
 
 build_lib() {
   rm -rf BUILD
@@ -17,6 +19,7 @@ build_lib() {
 }
 
 get_git_revision https://github.com/libjpeg-turbo/libjpeg-turbo.git b0971e47d76fdb81270e93bbf11ff5558073350d SRC
+cp $(dirname $0)/cur_diff.patch .
 build_lib
 
 if [[ $FUZZING_ENGINE == "hooks" ]]; then
