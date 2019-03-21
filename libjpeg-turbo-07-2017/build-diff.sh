@@ -15,7 +15,8 @@ build_lib() {
   rm -rf BUILD
   (cd SRC && patch -p1 < ../cur_diff.patch)
   cp -rf SRC BUILD
-  (cd SRC && autoreconf -fiv && cd ../BUILD && sh ../SRC/configure && make -j $JOBS)
+  (cd BUILD && cmake . && make -j $JOBS)
+  # (cd SRC && autoreconf -fiv && cd ../BUILD && sh ../SRC/configure && make -j $JOBS)
 }
 
 get_git_revision https://github.com/libjpeg-turbo/libjpeg-turbo.git b0971e47d76fdb81270e93bbf11ff5558073350d SRC
