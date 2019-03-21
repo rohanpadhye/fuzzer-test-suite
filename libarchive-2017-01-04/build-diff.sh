@@ -13,7 +13,7 @@ build_lib() {
   rm -rf BUILD
   cp -rf SRC BUILD
   (cd BUILD && patch -p1 < ../cur_diff.patch)
-  (cd BUILD/build && ./autogen.sh && cd .. && ./configure --without-nettle WAYPOINTS="diff" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" && make -j $JOBS)
+  (cd BUILD/build && ./autogen.sh && cd .. && ./configure --without-nettle && make -j $JOBS)
 }
 
 get_git_revision https://github.com/libarchive/libarchive.git 51d7afd3644fdad725dd8faa7606b864fd125f88 SRC
