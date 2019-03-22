@@ -1,11 +1,11 @@
 diff --git a/ANNOUNCE b/ANNOUNCE
-index b2857dca0..5180c4f65 100644
+index b2857dca0..ceff23dd5 100644
 --- a/ANNOUNCE
 +++ b/ANNOUNCE
-@@ -1,48 +1,46 @@
+@@ -1,48 +1,47 @@
  
 -Libpng 1.2.56 - December 17, 2015
-+Libpng 1.2.57beta01 - January 3, 2016
++Libpng 1.2.58beta01 - August 7, 2017
  
 -This is a public release of libpng, intended for use in production codes.
 +This is not intended to be a public release.  It will be replaced
@@ -18,31 +18,31 @@ index b2857dca0..5180c4f65 100644
  
 -   libpng-1.2.56.tar.xz (LZMA-compressed, recommended)
 -   libpng-1.2.56.tar.gz
-+   libpng-1.2.57beta01.tar.xz (LZMA-compressed, recommended)
-+   libpng-1.2.57beta01.tar.gz
++   libpng-1.2.58beta01.tar.xz (LZMA-compressed, recommended)
++   libpng-1.2.58beta01.tar.gz
  
  Source files with LF line endings (for Unix/Linux) without the
  "configure" script
  
 -   libpng-1.2.56-no-config.tar.xz (LZMA-compressed, recommended)
 -   libpng-1.2.56-no-config.tar.gz
-+   libpng-1.2.57beta01-no-config.tar.xz (LZMA-compressed, recommended)
-+   libpng-1.2.57beta01-no-config.tar.gz
++   libpng-1.2.58beta01-no-config.tar.xz (LZMA-compressed, recommended)
++   libpng-1.2.58beta01-no-config.tar.gz
  
  Source files with CRLF line endings (for Windows), without the
  "configure" script
  
 -   lpng1256.zip
 -   lpng1256.7z
-+   lp1257b01.zip
-+   lp1257b01.7z
++   lp1258b01.zip
++   lp1258b01.7z
  
  Project files
  
 -   libpng-1.2.56-project-netware.zip
 -   libpng-1.2.56-project-wince.zip
-+   libpng-1.2.57beta01-project-netware.zip
-+   libpng-1.2.57beta01-project-wince.zip
++   libpng-1.2.58beta01-project-netware.zip
++   libpng-1.2.58beta01-project-wince.zip
  
  Other information:
  
@@ -52,39 +52,50 @@ index b2857dca0..5180c4f65 100644
 -   libpng-1.2.56-Y2K-compliance.txt
 -   libpng-1.2.56-[previous version]-diff.txt
 -   libpng-1.2.56-*.asc (armored detached GPG signatures)
-+   libpng-1.2.57beta01-README.txt
-+   libpng-1.2.57beta01-KNOWNBUGS.txt
-+   libpng-1.2.57beta01-LICENSE.txt
-+   libpng-1.2.57beta01-Y2K-compliance.txt
-+   libpng-1.2.57beta01-[previous version]-diff.txt
-+   libpng-1.2.57beta01-*.asc (armored detached GPG signatures)
++   libpng-1.2.58beta01-README.txt
++   libpng-1.2.58beta01-KNOWNBUGS.txt
++   libpng-1.2.58beta01-LICENSE.txt
++   libpng-1.2.58beta01-Y2K-compliance.txt
++   libpng-1.2.58beta01-[previous version]-diff.txt
++   libpng-1.2.58beta01-*.asc (armored detached GPG signatures)
  
 -Changes since the last public release (1.2.55):
-+Changes since the last public release (1.2.56):
++Changes since the last public release (1.2.57):
  
 -  Fixed an out-of-range read in png_check_keyword() (Bug report from
 -    Qixue Xiao, CVE-2015-8540).
 -  Corrected copyright dates in source files.
 -  Moved png_check_keyword() from pngwutil.c to pngset.c
-+version 1.2.57beta01 [January 3, 2016]
++version 1.2.58beta01 [August 7, 2017]
++   Added png_check_chunk_length() function.
  
  Send comments/corrections/commendations to png-mng-implement at lists.sf.net
  (subscription required; visit
 diff --git a/CHANGES b/CHANGES
-index b14e27537..4de38468c 100644
+index b14e27537..a1a45f3ce 100644
 --- a/CHANGES
 +++ b/CHANGES
-@@ -2920,6 +2920,8 @@ version 1.2.56rc01 [December 14, 2015]
+@@ -2920,6 +2920,18 @@ version 1.2.56rc01 [December 14, 2015]
  version 1.2.56 [December 17, 2015]
    No changes.
  
-+version 1.2.57beta01 [January 3, 2016]
++version 1.2.57rc01 [December 27, 2016]
++  Fix typos in libpng.3 synopses (Eric S. Raymond).
++  Fixed undefined behavior in png_push_save_buffer(). Do not call
++    memcpy() with a null source, even if count is zero (Leon Scroggins III).
++
++version 1.0.67 and 1.2.57 [December 29, 2016]
++  Fixed a potential null pointer dereference in png_set_text_2() (bug report
++    and patch by Patrick Keshishian, CVE-2016-10087).
++
++version 1.2.58beta01 [August 7, 2017]
++   Added png_check_chunk_length() function.
 +
  Send comments/corrections/commendations to png-mng-implement at lists.sf.net
  (subscription required; visit
  https://lists.sourceforge.net/lists/listinfo/png-mng-implement
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 12c8fd2b7..c392a666f 100644
+index 12c8fd2b7..f42b9aedc 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -22,7 +22,7 @@ enable_testing()
@@ -92,7 +103,7 @@ index 12c8fd2b7..c392a666f 100644
  set(PNGLIB_MAJOR 1)
  set(PNGLIB_MINOR 2)
 -set(PNGLIB_RELEASE 56)
-+set(PNGLIB_RELEASE 57)
++set(PNGLIB_RELEASE 58)
  set(PNGLIB_NAME libpng${PNGLIB_MAJOR}${PNGLIB_MINOR})
  set(PNGLIB_VERSION ${PNGLIB_MAJOR}.${PNGLIB_MINOR}.${PNGLIB_RELEASE})
  
@@ -101,18 +112,18 @@ index 12c8fd2b7..c392a666f 100644
  if(PNG_SHARED)
    set_target_properties(${PNG_LIB_NAME} PROPERTIES
 -#   VERSION 0.${PNGLIB_RELEASE}.1.2.56
-+#   VERSION 0.${PNGLIB_RELEASE}.1.2.57beta01
++#   VERSION 0.${PNGLIB_RELEASE}.1.2.58beta01
      VERSION 0.${PNGLIB_RELEASE}.0
      SOVERSION 0
      CLEAN_DIRECT_OUTPUT 1)
 diff --git a/INSTALL b/INSTALL
-index 3a32c1f60..45b1310f8 100644
+index 3a32c1f60..36b98255c 100644
 --- a/INSTALL
 +++ b/INSTALL
 @@ -1,5 +1,5 @@
  
 -Installing libpng version 1.2.56 - December 17, 2015
-+Installing libpng version 1.2.57beta01 - January 3, 2016
++Installing libpng version 1.2.58beta01 - December 30, 2016
  
  On Unix/Linux and similar systems, you can simply type
  
@@ -121,23 +132,23 @@ index 3a32c1f60..45b1310f8 100644
  
  You can rename the directories that you downloaded (they
 -might be called "libpng-1.2.56" or "libpng12" and "zlib-1.2.3"
-+might be called "libpng-1.2.57beta01" or "libpng12" and "zlib-1.2.3"
++might be called "libpng-1.2.58beta01" or "libpng12" and "zlib-1.2.3"
  or "zlib123") so that you have directories called "zlib" and "libpng".
  
  Your directory structure should look like this:
 diff --git a/KNOWNBUG b/KNOWNBUG
-index d702e6e4a..f2f4d9761 100644
+index d702e6e4a..ce654ca2b 100644
 --- a/KNOWNBUG
 +++ b/KNOWNBUG
 @@ -1,5 +1,5 @@
  
 -Known bugs in libpng version 1.2.56
-+Known bugs in libpng version 1.2.57beta01
++Known bugs in libpng version 1.2.58beta01
  
  1. February 23, 2006: The custom makefiles don't build libpng with -lz.
  
 diff --git a/LICENSE b/LICENSE
-index 3b1f32917..7553cc49b 100644
+index 3b1f32917..62e5bc31d 100644
 --- a/LICENSE
 +++ b/LICENSE
 @@ -10,8 +10,8 @@ this sentence.
@@ -146,8 +157,8 @@ index 3b1f32917..7553cc49b 100644
  
 -libpng versions 1.0.7, July 1, 2000, through 1.2.56, December 17, 2015, are
 -Copyright (c) 2000-2002, 2004, 2006-2015 Glenn Randers-Pehrson, are
-+libpng versions 1.0.7, July 1, 2000, through 1.2.57beta01, January 3, 2016, are
-+Copyright (c) 2000-2002, 2004, 2006-2016 Glenn Randers-Pehrson, are
++libpng versions 1.0.7, July 1, 2000, through 1.2.58beta01, December 30, 2016, are
++Copyright (c) 2000-2002, 2004, 2006-2017 Glenn Randers-Pehrson, are
  derived from libpng-1.0.6, and are distributed according to the same
  disclaimer and license as libpng-1.0.6 with the following individuals
  added to the list of Contributing Authors:
@@ -156,9 +167,9 @@ index 3b1f32917..7553cc49b 100644
  Glenn Randers-Pehrson
  glennrp at users.sourceforge.net
 -December 17, 2015
-+January 3, 2016
++December 30, 2016
 diff --git a/Makefile.am b/Makefile.am
-index be034c51c..44c6b18dd 100644
+index be034c51c..39ce10565 100644
 --- a/Makefile.am
 +++ b/Makefile.am
 @@ -89,7 +89,7 @@ EXTRA_DIST= \
@@ -166,12 +177,12 @@ index be034c51c..44c6b18dd 100644
  	${srcdir}/contrib/visupng/* \
  	$(TESTS) \
 -	example.c libpng-1.2.56.txt pnggccrd.c pngvcrd.c
-+	example.c libpng-1.2.57beta01.txt pnggccrd.c pngvcrd.c
++	example.c libpng-1.2.58beta01.txt pnggccrd.c pngvcrd.c
  
  CLEANFILES= pngout.png libpng12.pc libpng12-config libpng.vers \
  libpng.sym
 diff --git a/Makefile.in b/Makefile.in
-index 5d05c2480..c4a565a51 100644
+index 5d05c2480..4b2dda517 100644
 --- a/Makefile.in
 +++ b/Makefile.in
 @@ -647,7 +647,7 @@ EXTRA_DIST = \
@@ -179,17 +190,17 @@ index 5d05c2480..c4a565a51 100644
  	${srcdir}/contrib/visupng/* \
  	$(TESTS) \
 -	example.c libpng-1.2.56.txt pnggccrd.c pngvcrd.c
-+	example.c libpng-1.2.57beta01.txt pnggccrd.c pngvcrd.c
++	example.c libpng-1.2.58beta01.txt pnggccrd.c pngvcrd.c
  
  CLEANFILES = pngout.png libpng12.pc libpng12-config libpng.vers \
  libpng.sym
 diff --git a/README b/README
-index 4f5d48729..e253b65b2 100644
+index 4f5d48729..5149f117d 100644
 --- a/README
 +++ b/README
 @@ -1,4 +1,4 @@
 -README for libpng version 1.2.56 - December 17, 2015 (shared library 12.0)
-+README for libpng version 1.2.57beta01 - January 3, 2016 (shared library 12.0)
++README for libpng version 1.2.58beta01 - December 30, 2016 (shared library 12.0)
  See the note about version numbers near the top of png.h
  
  See INSTALL for instructions on how to install libpng.
@@ -198,13 +209,13 @@ index 4f5d48729..e253b65b2 100644
                              libpng.a)
         makefile.elf     =>  Linux/ELF gcc makefile symbol versioning,
 -                            creates libpng12.so.0.1.2.56)
-+                            creates libpng12.so.0.1.2.57beta01)
++                            creates libpng12.so.0.1.2.58beta01)
         makefile.linux   =>  Linux/ELF makefile (gcc, creates
 -                            libpng12.so.0.1.2.56)
-+                            libpng12.so.0.1.2.57beta01)
++                            libpng12.so.0.1.2.58beta01)
         makefile.gcmmx   =>  Linux/ELF makefile (gcc, creates
 -                            libpng12.so.0.1.2.56, previously
-+                            libpng12.so.0.1.2.57beta01, previously
++                            libpng12.so.0.1.2.58beta01, previously
                              used assembler code tuned for Intel MMX
                              platform)
         makefile.gcc     =>  Generic makefile (gcc, creates static
@@ -213,19 +224,19 @@ index 4f5d48729..e253b65b2 100644
         makefile.sgi     =>  Silicon Graphics IRIX (cc, creates static lib)
         makefile.sggcc   =>  Silicon Graphics
 -                            (gcc, creates libpng12.so.0.1.2.56)
-+                            (gcc, creates libpng12.so.0.1.2.57beta01)
++                            (gcc, creates libpng12.so.0.1.2.58beta01)
         makefile.sunos   =>  Sun makefile
         makefile.solaris =>  Solaris 2.X makefile
 -                            (gcc, creates libpng12.so.0.1.2.56)
-+                            (gcc, creates libpng12.so.0.1.2.57beta01)
++                            (gcc, creates libpng12.so.0.1.2.58beta01)
         makefile.so9     =>  Solaris 9 makefile
 -                            (gcc, creates libpng12.so.0.1.2.56)
-+                            (gcc, creates libpng12.so.0.1.2.57beta01)
++                            (gcc, creates libpng12.so.0.1.2.58beta01)
         makefile.32sunu  =>  Sun Ultra 32-bit makefile
         makefile.64sunu  =>  Sun Ultra 64-bit makefile
         makefile.sco     =>  For SCO OSr5  ELF and Unixware 7 with Native cc
 diff --git a/Y2KINFO b/Y2KINFO
-index 590858b9d..505f384c9 100644
+index 590858b9d..67f16ef31 100644
 --- a/Y2KINFO
 +++ b/Y2KINFO
 @@ -1,13 +1,13 @@
@@ -233,26 +244,26 @@ index 590858b9d..505f384c9 100644
     =========================
  
 -      December 17, 2015
-+      January 3, 2016
++      December 30, 2016
  
        Since the PNG Development group is an ad-hoc body, we can't make
        an official declaration.
  
        This is your unofficial assurance that libpng from version 0.71 and
 -      upward through 1.2.56 are Y2K compliant.  It is my belief that earlier
-+      upward through 1.2.57beta01 are Y2K compliant.  It is my belief that earlier
++      upward through 1.2.58beta01 are Y2K compliant.  It is my belief that earlier
        versions were also Y2K compliant.
  
        Libpng only has three year fields.  One is a 2-byte unsigned integer
 diff --git a/configure b/configure
-index 6edadc6ef..0eabfebb7 100755
+index 6edadc6ef..8a3a996b8 100755
 --- a/configure
 +++ b/configure
 @@ -1,6 +1,6 @@
  #! /bin/sh
  # Guess values for system-dependent variables and create Makefiles.
 -# Generated by GNU Autoconf 2.69 for libpng 1.2.56.
-+# Generated by GNU Autoconf 2.69 for libpng 1.2.57beta01.
++# Generated by GNU Autoconf 2.69 for libpng 1.2.58beta01.
  #
  # Report bugs to <png-mng-implement@lists.sourceforge.net>.
  #
@@ -262,8 +273,8 @@ index 6edadc6ef..0eabfebb7 100755
  PACKAGE_TARNAME='libpng'
 -PACKAGE_VERSION='1.2.56'
 -PACKAGE_STRING='libpng 1.2.56'
-+PACKAGE_VERSION='1.2.57beta01'
-+PACKAGE_STRING='libpng 1.2.57beta01'
++PACKAGE_VERSION='1.2.58beta01'
++PACKAGE_STRING='libpng 1.2.58beta01'
  PACKAGE_BUGREPORT='png-mng-implement@lists.sourceforge.net'
  PACKAGE_URL=''
  
@@ -272,7 +283,7 @@ index 6edadc6ef..0eabfebb7 100755
    # This message is too long to be a string in the A/UX 3.1 sh.
    cat <<_ACEOF
 -\`configure' configures libpng 1.2.56 to adapt to many kinds of systems.
-+\`configure' configures libpng 1.2.57beta01 to adapt to many kinds of systems.
++\`configure' configures libpng 1.2.58beta01 to adapt to many kinds of systems.
  
  Usage: $0 [OPTION]... [VAR=VALUE]...
  
@@ -281,7 +292,7 @@ index 6edadc6ef..0eabfebb7 100755
  if test -n "$ac_init_help"; then
    case $ac_init_help in
 -     short | recursive ) echo "Configuration of libpng 1.2.56:";;
-+     short | recursive ) echo "Configuration of libpng 1.2.57beta01:";;
++     short | recursive ) echo "Configuration of libpng 1.2.58beta01:";;
     esac
    cat <<\_ACEOF
  
@@ -290,7 +301,7 @@ index 6edadc6ef..0eabfebb7 100755
  if $ac_init_version; then
    cat <<\_ACEOF
 -libpng configure 1.2.56
-+libpng configure 1.2.57beta01
++libpng configure 1.2.58beta01
  generated by GNU Autoconf 2.69
  
  Copyright (C) 2012 Free Software Foundation, Inc.
@@ -299,7 +310,7 @@ index 6edadc6ef..0eabfebb7 100755
  running configure, to aid debugging if configure makes a mistake.
  
 -It was created by libpng $as_me 1.2.56, which was
-+It was created by libpng $as_me 1.2.57beta01, which was
++It was created by libpng $as_me 1.2.58beta01, which was
  generated by GNU Autoconf 2.69.  Invocation command line was
  
    $ $0 $@
@@ -308,7 +319,7 @@ index 6edadc6ef..0eabfebb7 100755
  # Define the identity of the package.
   PACKAGE='libpng'
 - VERSION='1.2.56'
-+ VERSION='1.2.57beta01'
++ VERSION='1.2.58beta01'
  
  
  cat >>confdefs.h <<_ACEOF
@@ -317,11 +328,11 @@ index 6edadc6ef..0eabfebb7 100755
  
  
 -PNGLIB_VERSION=1.2.56
-+PNGLIB_VERSION=1.2.57beta01
++PNGLIB_VERSION=1.2.58beta01
  PNGLIB_MAJOR=1
  PNGLIB_MINOR=2
 -PNGLIB_RELEASE=56
-+PNGLIB_RELEASE=57
++PNGLIB_RELEASE=58
  
  
  
@@ -330,7 +341,7 @@ index 6edadc6ef..0eabfebb7 100755
  # values after options handling.
  ac_log="
 -This file was extended by libpng $as_me 1.2.56, which was
-+This file was extended by libpng $as_me 1.2.57beta01, which was
++This file was extended by libpng $as_me 1.2.58beta01, which was
  generated by GNU Autoconf 2.69.  Invocation command line was
  
    CONFIG_FILES    = $CONFIG_FILES
@@ -339,12 +350,12 @@ index 6edadc6ef..0eabfebb7 100755
  ac_cs_config="`$as_echo "$ac_configure_args" | sed 's/^ //; s/[\\""\`\$]/\\\\&/g'`"
  ac_cs_version="\\
 -libpng config.status 1.2.56
-+libpng config.status 1.2.57beta01
++libpng config.status 1.2.58beta01
  configured by $0, generated by GNU Autoconf 2.69,
    with options \\"\$ac_cs_config\\"
  
 diff --git a/configure.ac b/configure.ac
-index edfd02020..f86c194ce 100644
+index edfd02020..d6f2b631d 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -18,15 +18,15 @@ AC_PREREQ(2.59)
@@ -352,32 +363,32 @@ index edfd02020..f86c194ce 100644
  dnl Version number stuff here:
  
 -AC_INIT([libpng], [1.2.56], [png-mng-implement@lists.sourceforge.net])
-+AC_INIT([libpng], [1.2.57beta01], [png-mng-implement@lists.sourceforge.net])
++AC_INIT([libpng], [1.2.58beta01], [png-mng-implement@lists.sourceforge.net])
  AM_INIT_AUTOMAKE
  dnl stop configure from automagically running automake
  AM_MAINTAINER_MODE
  
 -PNGLIB_VERSION=1.2.56
-+PNGLIB_VERSION=1.2.57beta01
++PNGLIB_VERSION=1.2.58beta01
  PNGLIB_MAJOR=1
  PNGLIB_MINOR=2
 -PNGLIB_RELEASE=56
-+PNGLIB_RELEASE=57
++PNGLIB_RELEASE=58
  
  dnl End of version number stuff
  
-diff --git a/libpng-1.2.56.txt b/libpng-1.2.57beta01.txt
+diff --git a/libpng-1.2.56.txt b/libpng-1.2.58beta01.txt
 similarity index 99%
 rename from libpng-1.2.56.txt
-rename to libpng-1.2.57beta01.txt
-index 2794b7e72..a9220a512 100644
+rename to libpng-1.2.58beta01.txt
+index 2794b7e72..268ad27b3 100644
 --- a/libpng-1.2.56.txt
-+++ b/libpng-1.2.57beta01.txt
++++ b/libpng-1.2.58beta01.txt
 @@ -1,6 +1,6 @@
  libpng.txt - A description on how to use and modify libpng
  
 - libpng version 1.2.56 - December 17, 2015
-+ libpng version 1.2.57beta01 - January 3, 2016
++ libpng version 1.2.58beta01 - December 30, 2016
   Updated and distributed by Glenn Randers-Pehrson
   <glennrp at users.sourceforge.net>
   Copyright (c) 1998-2014 Glenn Randers-Pehrson
@@ -386,7 +397,7 @@ index 2794b7e72..a9220a512 100644
   Based on:
  
 - libpng versions 0.97, January 1998, through 1.2.56 - December 17, 2015
-+ libpng versions 0.97, January 1998, through 1.2.57beta01 - January 3, 2016
++ libpng versions 0.97, January 1998, through 1.2.58beta01 - December 30, 2016
   Updated and distributed by Glenn Randers-Pehrson
   Copyright (c) 1998-2014 Glenn Randers-Pehrson
  
@@ -395,7 +406,7 @@ index 2794b7e72..a9220a512 100644
  added.  It expands the sample depth without changing tRNS to alpha.
  
 -As of libpng version 1.2.56, not all possible expansions are supported.
-+As of libpng version 1.2.57beta01, not all possible expansions are supported.
++As of libpng version 1.2.58beta01, not all possible expansions are supported.
  
  In the following table, the 01 means grayscale with depth<8, 31 means
  indexed with depth<8, other numerals represent the color type, "T" means
@@ -404,132 +415,233 @@ index 2794b7e72..a9220a512 100644
  
  This is your unofficial assurance that libpng from version 0.71 and
 -upward through 1.2.56 are Y2K compliant.  It is my belief that earlier
-+upward through 1.2.57beta01 are Y2K compliant.  It is my belief that earlier
++upward through 1.2.58beta01 are Y2K compliant.  It is my belief that earlier
  versions were also Y2K compliant.
  
  Libpng only has three year fields.  One is a 2-byte unsigned integer that
 diff --git a/libpng.3 b/libpng.3
-index 1b2869854..5b81a7326 100644
+index 1b2869854..553feb397 100644
 --- a/libpng.3
 +++ b/libpng.3
 @@ -1,6 +1,6 @@
 -.TH LIBPNG 3 "December 17, 2015"
-+.TH LIBPNG 3 "January 3, 2016"
++.TH LIBPNG 3 "December 30, 2016"
  .SH NAME
 -libpng \- Portable Network Graphics (PNG) Reference Library 1.2.56
-+libpng \- Portable Network Graphics (PNG) Reference Library 1.2.57beta01
++libpng \- Portable Network Graphics (PNG) Reference Library 1.2.58beta01
  .SH SYNOPSIS
  \fB
  #include <png.h>\fP
-@@ -410,7 +410,7 @@ Following is a copy of the libpng.txt file that accompanies libpng.
+@@ -89,7 +89,11 @@ libpng \- Portable Network Graphics (PNG) Reference Library 1.2.56
+ 
+ \fBpng_uint_32 png_get_image_width (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fIinfo_ptr\fP\fB);\fP
+ 
+-\fB#if !defined(PNG_1_0_X) png_int_32 png_get_int_32 (png_bytep buf); \fI#endif
++\fB#if \fI!defined(PNG_1_0_X)
++
++\fBpng_int_32 png_get_int_32 (png_bytep \fIbuf\fP\fB);\fP
++
++\fI\fB#endif
+ 
+ \fBpng_byte png_get_interlace_type (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fIinfo_ptr\fP\fB);\fP
+ 
+@@ -113,7 +117,9 @@ libpng \- Portable Network Graphics (PNG) Reference Library 1.2.56
+ 
+ \fBpng_uint_32 png_get_PLTE (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fP\fIinfo_ptr\fP\fB, png_colorp \fP\fI*palette\fP\fB, int \fI*num_palette\fP\fB);\fP
+ 
+-\fBpng_byte png_get_rgb_to_gray_status (png_structp png_ptr) png_uint_32 png_get_rowbytes (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fIinfo_ptr\fP\fB);\fP
++\fBpng_byte png_get_rgb_to_gray_status (png_structp \fIpng_ptr\fP\fB);\fP
++
++\fBpng_uint_32 png_get_rowbytes (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fIinfo_ptr\fP\fB);\fP
+ 
+ \fBpng_bytepp png_get_rows (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fIinfo_ptr\fP\fB);\fP
+ 
+@@ -131,11 +137,15 @@ libpng \- Portable Network Graphics (PNG) Reference Library 1.2.56
+ 
+ \fBpng_uint_32 png_get_tRNS (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fP\fIinfo_ptr\fP\fB, png_bytep \fP\fI*trans\fP\fB, int \fP\fI*num_trans\fP\fB, png_color_16p \fI*trans_values\fP\fB);\fP
+ 
+-\fB#if !defined(PNG_1_0_X) png_uint_16 png_get_uint_16 (png_bytep \fIbuf\fP\fB);\fP
++\fB#if \fI!defined(PNG_1_0_X)
++
++\fBpng_uint_16 png_get_uint_16 (png_bytep \fIbuf\fP\fB);\fP
+ 
+ \fBpng_uint_32 png_get_uint_31 (png_bytep \fIbuf\fP\fB);\fP
+ 
+-\fBpng_uint_32 png_get_uint_32 (png_bytep buf); \fI#endif
++\fBpng_uint_32 png_get_uint_32 (png_bytep \fIbuf\fP\fB);\fP
++
++\fI\fB#endif
+ 
+ \fBpng_uint_32 png_get_unknown_chunks (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fP\fIinfo_ptr\fP\fB, png_unknown_chunkpp \fIunknowns\fP\fB);\fP
+ 
+@@ -209,13 +219,17 @@ libpng \- Portable Network Graphics (PNG) Reference Library 1.2.56
+ 
+ \fBvoid png_read_update_info (png_structp \fP\fIpng_ptr\fP\fB, png_infop \fIinfo_ptr\fP\fB);\fP
+ 
+-\fB#if !defined(PNG_1_0_X) png_save_int_32 (png_bytep \fP\fIbuf\fP\fB, png_int_32 \fIi\fP\fB);\fP
++\fB#if \fI!defined(PNG_1_0_X)
++
++\fBpng_save_int_32 (png_bytep \fP\fIbuf\fP\fB, png_int_32 \fIi\fP\fB);\fP
+ 
+ \fBvoid png_save_uint_16 (png_bytep \fP\fIbuf\fP\fB, unsigned int \fIi\fP\fB);\fP
+ 
+ \fBvoid png_save_uint_32 (png_bytep \fP\fIbuf\fP\fB, png_uint_32 \fIi\fP\fB);\fP
+ 
+-\fBvoid png_set_add_alpha (png_structp \fP\fIpng_ptr\fP\fB, png_uint_32 \fP\fIfiller\fP\fB, int flags); \fI#endif
++\fBvoid png_set_add_alpha (png_structp \fP\fIpng_ptr\fP\fB, png_uint_32 \fP\fIfiller\fP\fB, int \fIflags\fP\fB);\fP
++
++\fI\fB#endif
+ 
+ \fBvoid png_set_background (png_structp \fP\fIpng_ptr\fP\fB, png_color_16p \fP\fIbackground_color\fP\fB, int \fP\fIbackground_gamma_code\fP\fB, int \fP\fIneed_expand\fP\fB, double \fIbackground_gamma\fP\fB);\fP
+ 
+@@ -410,7 +424,7 @@ Following is a copy of the libpng.txt file that accompanies libpng.
  .SH LIBPNG.TXT
  libpng.txt - A description on how to use and modify libpng
  
 - libpng version 1.2.56 - December 17, 2015
-+ libpng version 1.2.57beta01 - January 3, 2016
++ libpng version 1.2.58beta01 - December 30, 2016
   Updated and distributed by Glenn Randers-Pehrson
   <glennrp at users.sourceforge.net>
   Copyright (c) 1998-2014 Glenn Randers-Pehrson
-@@ -421,7 +421,7 @@ libpng.txt - A description on how to use and modify libpng
+@@ -421,7 +435,7 @@ libpng.txt - A description on how to use and modify libpng
  
   Based on:
  
 - libpng versions 0.97, January 1998, through 1.2.56 - December 17, 2015
-+ libpng versions 0.97, January 1998, through 1.2.57beta01 - January 3, 2016
++ libpng versions 0.97, January 1998, through 1.2.58beta01 - December 30, 2016
   Updated and distributed by Glenn Randers-Pehrson
   Copyright (c) 1998-2014 Glenn Randers-Pehrson
  
-@@ -1289,7 +1289,7 @@ things.
+@@ -1289,7 +1303,7 @@ things.
  As of libpng version 1.2.9, png_set_expand_gray_1_2_4_to_8() was
  added.  It expands the sample depth without changing tRNS to alpha.
  
 -As of libpng version 1.2.56, not all possible expansions are supported.
-+As of libpng version 1.2.57beta01, not all possible expansions are supported.
++As of libpng version 1.2.58beta01, not all possible expansions are supported.
  
  In the following table, the 01 means grayscale with depth<8, 31 means
  indexed with depth<8, other numerals represent the color type, "T" means
-@@ -3572,7 +3572,7 @@ Since the PNG Development group is an ad-hoc body, we can't make
+@@ -3572,7 +3586,7 @@ Since the PNG Development group is an ad-hoc body, we can't make
  an official declaration.
  
  This is your unofficial assurance that libpng from version 0.71 and
 -upward through 1.2.56 are Y2K compliant.  It is my belief that earlier
-+upward through 1.2.57beta01 are Y2K compliant.  It is my belief that earlier
++upward through 1.2.58beta01 are Y2K compliant.  It is my belief that earlier
  versions were also Y2K compliant.
  
  Libpng only has three year fields.  One is a 2-byte unsigned integer that
-@@ -3726,7 +3726,7 @@ possible without all of you.
+@@ -3669,8 +3683,8 @@ the first widely used release:
+  ...
+  1.0.19                  10    10019  10.so.0.19[.0]
+  ...
+- 1.0.66                  10    10066  10.so.0.66[.0]
+- 1.2.56                  13    10256  12.so.0.56[.0]
++ 1.0.67                  10    10067  10.so.0.67[.0]
++ 1.2.57                  13    10257  12.so.0.57[.0]
+ 
+ Henceforth the source version will match the shared-library minor
+ and patch numbers; the shared-library major version number will be
+@@ -3726,7 +3740,7 @@ possible without all of you.
  
  Thanks to Frank J. T. Wojcik for helping with the documentation.
  
 -Libpng version 1.2.56 - December 17, 2015:
-+Libpng version 1.2.57beta01 - January 3, 2016:
++Libpng version 1.2.58beta01 - December 30, 2016:
  Initially created in 1995 by Guy Eric Schalnat, then of Group 42, Inc.
  Currently maintained by Glenn Randers-Pehrson (glennrp at users.sourceforge.net).
  
-@@ -3751,8 +3751,8 @@ this sentence.
+@@ -3751,8 +3765,8 @@ this sentence.
  
  This code is released under the libpng license.
  
 -libpng versions 1.0.7, July 1, 2000, through 1.2.56, December 17, 2015, are
 -Copyright (c) 2000-2002, 2004, 2006-2015 Glenn Randers-Pehrson, are
-+libpng versions 1.0.7, July 1, 2000, through 1.2.57beta01, January 3, 2016, are
-+Copyright (c) 2000-2002, 2004, 2006-2016 Glenn Randers-Pehrson, are
++libpng versions 1.0.7, July 1, 2000, through 1.2.58beta01, December 30, 2016, are
++Copyright (c) 2000-2002, 2004, 2006-2017 Glenn Randers-Pehrson, are
  derived from libpng-1.0.6, and are distributed according to the same
  disclaimer and license as libpng-1.0.6 with the following individuals
  added to the list of Contributing Authors:
-@@ -3848,7 +3848,7 @@ the additional disclaimers inserted at version 1.0.7.
+@@ -3848,7 +3862,7 @@ the additional disclaimers inserted at version 1.0.7.
  
  Glenn Randers-Pehrson
  glennrp at users.sourceforge.net
 -December 17, 2015
-+January 3, 2016
++December 30, 2016
  
  .\" end of man page
  
 diff --git a/libpngpf.3 b/libpngpf.3
-index 85f042698..bdfc4427e 100644
+index 85f042698..a8ae53a18 100644
 --- a/libpngpf.3
 +++ b/libpngpf.3
 @@ -1,6 +1,6 @@
 -.TH LIBPNGPF 3 "December 17, 2015"
-+.TH LIBPNGPF 3 "January 3, 2016"
++.TH LIBPNGPF 3 "December 30, 2016"
  .SH NAME
 -libpng \- Portable Network Graphics (PNG) Reference Library 1.2.56
-+libpng \- Portable Network Graphics (PNG) Reference Library 1.2.57beta01
++libpng \- Portable Network Graphics (PNG) Reference Library 1.2.58beta01
  (private functions)
  .SH SYNOPSIS
  \fB#include <png.h>\fP
 diff --git a/png.5 b/png.5
-index a783bbdd8..5c75df9ca 100644
+index a783bbdd8..3e5be3c2f 100644
 --- a/png.5
 +++ b/png.5
 @@ -1,4 +1,4 @@
 -.TH PNG 5 "December 17, 2015"
-+.TH PNG 5 "January 3, 2016"
++.TH PNG 5 "December 30, 2016"
  .SH NAME
  png \- Portable Network Graphics (PNG) format
  .SH DESCRIPTION
+@@ -35,7 +35,7 @@ PNG 1.0 specification, October 1996:
+ RFC 2083
+ .IP
+ .br
+-ftp://ftp.rfc-editor.org:/in-notes/rfc2083.txt
++http://www.ietf.org/rfc/rfc2083.txt
+ .br
+ or (as a W3C Recommendation) at
+ .br
 diff --git a/png.c b/png.c
-index 67b788157..778952b25 100644
+index 67b788157..e0d3eb8a3 100644
 --- a/png.c
 +++ b/png.c
+@@ -1,8 +1,8 @@
+ 
+ /* png.c - location for general purpose libpng functions
+  *
+- * Last changed in libpng 1.2.54 [November 12, 2015]
+- * Copyright (c) 1998-2002,2004,2006-2015 Glenn Randers-Pehrson
++ * Last changed in libpng 1.2.58 [(PENDING RELEASE)]
++ * Copyright (c) 1998-2002,2004,2006-2017 Glenn Randers-Pehrson
+  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
+  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
+  *
 @@ -17,7 +17,7 @@
  #include "png.h"
  
  /* Generate a compiler error if there is an old png.h in the search path. */
 -typedef version_1_2_56 Your_png_h_is_not_version_1_2_56;
-+typedef version_1_2_57beta01 Your_png_h_is_not_version_1_2_57beta01;
++typedef version_1_2_58beta01 Your_png_h_is_not_version_1_2_58beta01;
  
  /* Version information for C files.  This had better match the version
   * string defined in png.h.
-@@ -731,15 +731,15 @@ png_get_copyright(png_structp png_ptr)
+@@ -393,6 +393,7 @@ png_free_data(png_structp png_ptr, png_infop info_ptr, png_uint_32 mask,
+          png_free(png_ptr, info_ptr->text);
+          info_ptr->text = NULL;
+          info_ptr->num_text=0;
++         info_ptr->max_text=0;
+       }
+    }
+ #endif
+@@ -731,15 +732,15 @@ png_get_copyright(png_structp png_ptr)
  #else
  #ifdef __STDC__
     return ((png_charp) PNG_STRING_NEWLINE \
 -     "libpng version 1.2.56 - December 17, 2015" PNG_STRING_NEWLINE \
 -     "Copyright (c) 1998-2002,2004,2006-2015 Glenn Randers-Pehrson" \
-+     "libpng version 1.2.57beta01 - January 3, 2016" PNG_STRING_NEWLINE \
-+     "Copyright (c) 1998-2002,2004,2006-2016 Glenn Randers-Pehrson" \
++     "libpng version 1.2.58beta01 - December 30, 2016" PNG_STRING_NEWLINE \
++     "Copyright (c) 1998-2002,2004,2006-2017 Glenn Randers-Pehrson" \
       PNG_STRING_NEWLINE \
       "Copyright (c) 1996-1997 Andreas Dilger" PNG_STRING_NEWLINE \
       "Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc." \
@@ -537,13 +649,13 @@ index 67b788157..778952b25 100644
  #else
 -   return ((png_charp) "libpng version 1.2.56 - December 17, 2015\
 -      Copyright (c) 1998-2002,2004,2006-2015 Glenn Randers-Pehrson\
-+   return ((png_charp) "libpng version 1.2.57beta01 - January 3, 2016\
-+      Copyright (c) 1998-2002,2004,2006-2016 Glenn Randers-Pehrson\
++   return ((png_charp) "libpng version 1.2.58beta01 - December 30, 2016\
++      Copyright (c) 1998-2002,2004,2006-2017 Glenn Randers-Pehrson\
        Copyright (c) 1996-1997 Andreas Dilger\
        Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc.");
  #endif
 diff --git a/png.h b/png.h
-index f52416f30..7f309021a 100644
+index f52416f30..09a4ad7e1 100644
 --- a/png.h
 +++ b/png.h
 @@ -1,9 +1,9 @@
@@ -551,10 +663,10 @@ index f52416f30..7f309021a 100644
  /* png.h - header file for PNG reference library
   *
 - * libpng version 1.2.56, December 17, 2015
-+ * libpng version 1.2.57beta01, January 3, 2016
++ * libpng version 1.2.58beta01, August 7, 2017
   *
 - * Copyright (c) 1998-2015 Glenn Randers-Pehrson
-+ * Copyright (c) 1998-2016 Glenn Randers-Pehrson
++ * Copyright (c) 1998-2017 Glenn Randers-Pehrson
   * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
   * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
   *
@@ -563,7 +675,7 @@ index f52416f30..7f309021a 100644
   *  libpng versions 0.71, May 1995, through 0.88, January 1996: Guy Schalnat
   *  libpng versions 0.89, June 1996, through 0.96, May 1997: Andreas Dilger
 - *  libpng versions 0.97, January 1998, through 1.2.56, December 17, 2015: Glenn
-+ *  libpng versions 0.97, January 1998, through 1.2.57beta01, January 3, 2016: Glenn
++ *  libpng versions 0.97, January 1998, through 1.2.58beta01, August 7, 2017: Glenn
   *  See also "Contributing Authors", below.
   */
  
@@ -573,24 +685,35 @@ index f52416f30..7f309021a 100644
   *
 - * libpng versions 1.0.7, July 1, 2000, through 1.2.56, December 17, 2015, are
 - * Copyright (c) 2000-2002, 2004, 2006-2015 Glenn Randers-Pehrson, are
-+ * libpng versions 1.0.7, July 1, 2000, through 1.2.57beta01, January 3, 2016, are
-+ * Copyright (c) 2000-2002, 2004, 2006-2016 Glenn Randers-Pehrson, are
++ * libpng versions 1.0.7, July 1, 2000, through 1.2.58beta01, August 7, 2017, are
++ * Copyright (c) 2000-2002, 2004, 2006-2017 Glenn Randers-Pehrson, are
   * derived from libpng-1.0.6, and are distributed according to the same
   * disclaimer and license as libpng-1.0.6 with the following individuals
   * added to the list of Contributing Authors:
+@@ -179,8 +179,8 @@
+  *    ...
+  *    1.0.19                  10    10019  10.so.0.19[.0]
+  *    ...
+- *    1.0.66                  10    10066  10.so.0.66[.0]
+- *    1.2.56                  13    10256  12.so.0.56[.0]
++ *    1.0.68                  10    10068  10.so.0.68[.0]
++ *    1.2.58                  13    10258  12.so.0.58[.0]
+  *
+  *    Henceforth the source version will match the shared-library major
+  *    and minor numbers; the shared-library major version number will be
 @@ -208,13 +208,13 @@
   * Y2K compliance in libpng:
   * =========================
   *
 - *    December 17, 2015
-+ *    January 3, 2016
++ *    August 7, 2017
   *
   *    Since the PNG Development group is an ad-hoc body, we can't make
   *    an official declaration.
   *
   *    This is your unofficial assurance that libpng from version 0.71 and
 - *    upward through 1.2.56 are Y2K compliant.  It is my belief that earlier
-+ *    upward through 1.2.57beta01 are Y2K compliant.  It is my belief that earlier
++ *    upward through 1.2.58beta01 are Y2K compliant.  It is my belief that earlier
   *    versions were also Y2K compliant.
   *
   *    Libpng only has three year fields.  One is a 2-byte unsigned integer
@@ -599,10 +722,10 @@ index f52416f30..7f309021a 100644
  
  /* Version information for png.h - this should match the version in png.c */
 -#define PNG_LIBPNG_VER_STRING "1.2.56"
-+#define PNG_LIBPNG_VER_STRING "1.2.57beta01"
++#define PNG_LIBPNG_VER_STRING "1.2.58beta01"
  #define PNG_HEADER_VERSION_STRING \
 -   " libpng version 1.2.56 - December 17, 2015\n"
-+   " libpng version 1.2.57beta01 - January 3, 2016\n"
++   " libpng version 1.2.58beta01 - August 7, 2017\n"
  
  #define PNG_LIBPNG_VER_SONUM   0
  #define PNG_LIBPNG_VER_DLLNUM  13
@@ -611,7 +734,7 @@ index f52416f30..7f309021a 100644
  #define PNG_LIBPNG_VER_MAJOR   1
  #define PNG_LIBPNG_VER_MINOR   2
 -#define PNG_LIBPNG_VER_RELEASE 56
-+#define PNG_LIBPNG_VER_RELEASE 57
++#define PNG_LIBPNG_VER_RELEASE 58
  /* This should match the numeric part of the final component of
   * PNG_LIBPNG_VER_STRING, omitting any leading zero:
   */
@@ -635,7 +758,7 @@ index f52416f30..7f309021a 100644
   * version 1.0.1 it's    xxyyzz, where x=major, y=minor, z=release
   */
 -#define PNG_LIBPNG_VER 10256 /* 1.2.56 */
-+#define PNG_LIBPNG_VER 10257 /* 1.2.57 */
++#define PNG_LIBPNG_VER 10258 /* 1.2.58 */
  
  #ifndef PNG_VERSION_INFO_ONLY
  /* Include the compression library's header */
@@ -644,12 +767,22 @@ index f52416f30..7f309021a 100644
   * do not agree upon the version number.
   */
 -typedef png_structp version_1_2_56;
-+typedef png_structp version_1_2_57beta01;
++typedef png_structp version_1_2_58beta01;
  
  typedef png_struct FAR * FAR * png_structpp;
  
+@@ -3409,6 +3409,9 @@ PNG_EXTERN void png_handle_unknown PNGARG((png_structp png_ptr,
+ PNG_EXTERN void png_check_chunk_name PNGARG((png_structp png_ptr,
+    png_bytep chunk_name)) PNG_PRIVATE;
+ 
++PNG_EXTERN void png_check_chunk_length PNGARG((png_structp png_ptr,
++   png_uint_32 chunk_length)) PNG_PRIVATE;
++
+ /* Handle the transformations for reading and writing */
+ PNG_EXTERN void png_do_read_transformations
+    PNGARG((png_structp png_ptr)) PNG_PRIVATE;
 diff --git a/pngconf.h b/pngconf.h
-index e70816c24..d31515445 100644
+index e70816c24..58eb07a29 100644
 --- a/pngconf.h
 +++ b/pngconf.h
 @@ -1,7 +1,7 @@
@@ -657,12 +790,80 @@ index e70816c24..d31515445 100644
  /* pngconf.h - machine configurable file for libpng
   *
 - * libpng version 1.2.56, December 17, 2015
-+ * libpng version 1.2.57beta01, January 3, 2016
++ * libpng version 1.2.58beta01, December 30, 2016
   *
   * Copyright (c) 1998-2015 Glenn Randers-Pehrson
   * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
+diff --git a/pngerror.c b/pngerror.c
+index 0ce174459..e1e3d4d73 100644
+--- a/pngerror.c
++++ b/pngerror.c
+@@ -1,8 +1,8 @@
+ 
+ /* pngerror.c - stub functions for i/o and memory allocation
+  *
+- * Last changed in libpng 1.2.51 [February 6, 2014]
+- * Copyright (c) 1998-2002,2004,2006-2014 Glenn Randers-Pehrson
++ * Last changed in libpng 1.2.57 [(TO BE RELEASED)]
++ * Copyright (c) 1998-2002,2004,2006-2014,2016 Glenn Randers-Pehrson
+  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
+  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
+  *
+@@ -150,14 +150,14 @@ png_benign_error(png_structp png_ptr, png_const_charp error_message)
+  * to 63 bytes, the name characters are output as hex digits wrapped in []
+  * if the character is invalid.
+  */
++#define PNG_MAX_ERROR_TEXT 64
++#if defined(PNG_WARNINGS_SUPPORTED) || defined(PNG_ERROR_TEXT_SUPPORTED)
+ #define isnonalpha(c) ((c) < 65 || (c) > 122 || ((c) > 90 && (c) < 97))
+ static PNG_CONST char png_digit[16] = {
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    'A', 'B', 'C', 'D', 'E', 'F'
+ };
+ 
+-#define PNG_MAX_ERROR_TEXT 64
+-#if defined(PNG_WARNINGS_SUPPORTED) || defined(PNG_ERROR_TEXT_SUPPORTED)
+ static void /* PRIVATE */
+ png_format_buffer(png_structp png_ptr, png_charp buffer, png_const_charp
+    error_message)
+diff --git a/pngpread.c b/pngpread.c
+index 4c9ae765c..319a3140d 100644
+--- a/pngpread.c
++++ b/pngpread.c
+@@ -1,8 +1,8 @@
+ 
+ /* pngpread.c - read a png file in push mode
+  *
+- * Last changed in libpng 1.2.44 [June 26, 2010]
+- * Copyright (c) 1998-2002,2004,2006-2010 Glenn Randers-Pehrson
++ * Last changed in libpng 1.2.57 [(TO BE RELEASED)]
++ * Copyright (c) 1998-2002,2004,2006-2010,2016 Glenn Randers-Pehrson
+  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
+  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
+  *
+@@ -205,6 +205,7 @@ png_push_read_chunk(png_structp png_ptr, png_infop info_ptr)
+       png_reset_crc(png_ptr);
+       png_crc_read(png_ptr, png_ptr->chunk_name, 4);
+       png_check_chunk_name(png_ptr, png_ptr->chunk_name);
++      png_check_chunk_length(png_ptr, png_ptr->push_length);
+       png_ptr->mode |= PNG_HAVE_CHUNK_HEADER;
+    }
+ 
+@@ -687,7 +688,11 @@ png_push_save_buffer(png_structp png_ptr)
+       }
+       else
+       {
+-        png_memcpy(png_ptr->save_buffer, old_buffer, png_ptr->save_buffer_size);
++        if (old_buffer)
++          png_memcpy(png_ptr->save_buffer, old_buffer,
++             png_ptr->save_buffer_size);
++        else if (png_ptr->save_buffer_size)
++          png_error(png_ptr, "save_buffer error");
+         png_free(png_ptr, old_buffer);
+         png_ptr->save_buffer_max = new_max;
+       }
 diff --git a/pngrutil.c b/pngrutil.c
-index 32c1790b8..36ba4efb7 100644
+index 32c1790b8..9011f7063 100644
 --- a/pngrutil.c
 +++ b/pngrutil.c
 @@ -1,7 +1,7 @@
@@ -674,8 +875,73 @@ index 32c1790b8..36ba4efb7 100644
   * Copyright (c) 1998-2002,2004,2006-2015 Glenn Randers-Pehrson
   * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
   * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
+@@ -131,6 +131,9 @@ png_read_chunk_header(png_structp png_ptr)
+    /* Check to see if chunk name is valid */
+    png_check_chunk_name(png_ptr, png_ptr->chunk_name);
+ 
++   /* Check for too-large chunk length */
++   png_check_chunk_length(png_ptr, length);
++
+    return length;
+ }
+ 
+@@ -2506,6 +2509,41 @@ png_check_chunk_name(png_structp png_ptr, png_bytep chunk_name)
+    }
+ }
+ 
++void /* PRIVATE */
++png_check_chunk_length(png_structp png_ptr, png_uint_32 length)
++{
++   png_uint_32 limit = PNG_UINT_31_MAX;
++
++   /* if (png_ptr->chunk_name != "IDAT") */
++   if (png_ptr->chunk_name[0] != 73 || png_ptr->chunk_name[1] !=68 ||
++       png_ptr->chunk_name[2] != 65 || png_ptr->chunk_name[3] !=84)
++   {
++# if PNG_USER_CHUNK_MALLOC_MAX > 0
++      if (PNG_USER_CHUNK_MALLOC_MAX < limit)
++         limit = PNG_USER_CHUNK_MALLOC_MAX;
++# endif
++   }
++   else
++   {
++      size_t row_factor =
++         (png_ptr->width * png_ptr->channels * (png_ptr->bit_depth > 8? 2: 1)
++          + 1 + (png_ptr->interlaced? 6: 0));
++      if (png_ptr->height > PNG_UINT_32_MAX/row_factor)
++         limit=PNG_UINT_31_MAX;
++      else
++         limit = png_ptr->height * row_factor;
++      limit += 6 + 5*(limit/32566+1); /* zlib+deflate overhead */
++      limit=limit < PNG_UINT_31_MAX? limit : PNG_UINT_31_MAX;
++   }
++   if (length > limit)
++   {
++      png_debug2(0," length = %lu, limit = %lu",
++         (unsigned long)length,(unsigned long)limit);
++      png_chunk_error(png_ptr, "chunk data is too large");
++   }
++}
++
++
+ /* Combines the row recently read in with the existing pixels in the
+    row.  This routine takes care of alpha and transparency if requested.
+    This routine also handles the two methods of progressive display
+diff --git a/pngset.c b/pngset.c
+index a53f9a8e6..45641af13 100644
+--- a/pngset.c
++++ b/pngset.c
+@@ -1,7 +1,7 @@
+ 
+ /* pngset.c - storage of image information into info struct
+  *
+- * Last changed in libpng 1.2.56 [%RDATE%]
++ * Last changed in libpng 1.2.56 [December 17, 2015]
+  * Copyright (c) 1998-2002,2004,2006-2015 Glenn Randers-Pehrson
+  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
+  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
 diff --git a/pngtest.c b/pngtest.c
-index 31bfc4c7a..38c8ffcef 100644
+index 31bfc4c7a..d7c59c054 100644
 --- a/pngtest.c
 +++ b/pngtest.c
 @@ -1731,4 +1731,4 @@ main(int argc, char *argv[])
@@ -683,22 +949,35 @@ index 31bfc4c7a..38c8ffcef 100644
  
  /* Generate a compiler error if there is an old png.h in the search path. */
 -typedef version_1_2_56 your_png_h_is_not_version_1_2_56;
-+typedef version_1_2_57beta01 your_png_h_is_not_version_1_2_57beta01;
++typedef version_1_2_58beta01 your_png_h_is_not_version_1_2_58beta01;
+diff --git a/pngwutil.c b/pngwutil.c
+index e10d7dc55..95f00b375 100644
+--- a/pngwutil.c
++++ b/pngwutil.c
+@@ -1,7 +1,7 @@
+ 
+ /* pngwutil.c - utilities to write a PNG file
+  *
+- * Last changed in libpng 1.2.56 [%RDATE%]
++ * Last changed in libpng 1.2.56 [December 17, 2015]
+  * Copyright (c) 1998-2002,2004,2006-2015 Glenn Randers-Pehrson
+  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
+  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
 diff --git a/projects/wince.txt b/projects/wince.txt
-index d12c583bb..f96bf56d9 100644
+index d12c583bb..17c758aef 100644
 --- a/projects/wince.txt
 +++ b/projects/wince.txt
 @@ -1,6 +1,6 @@
  A set of project files is available for WinCE.  Get
 -libpng-1.2.56-project-wince.zip from a libpng distribution
-+libpng-1.2.57beta01-project-wince.zip from a libpng distribution
++libpng-1.2.58beta01-project-wince.zip from a libpng distribution
  site such as http://libpng.sourceforge.net/index.html
  
  Put the zip file in this directory (projects) and then run
 -"unzip -a libpng-1.2.56-project-wince.zip"
-+"unzip -a libpng-1.2.57beta01-project-wince.zip"
++"unzip -a libpng-1.2.58beta01-project-wince.zip"
 diff --git a/projects/xcode/libpng.xcodeproj/project.pbxproj b/projects/xcode/libpng.xcodeproj/project.pbxproj
-index 899f2adcc..ad4d75566 100644
+index 899f2adcc..3d1cca973 100644
 --- a/projects/xcode/libpng.xcodeproj/project.pbxproj
 +++ b/projects/xcode/libpng.xcodeproj/project.pbxproj
 @@ -222,7 +222,7 @@
@@ -706,7 +985,7 @@ index 899f2adcc..ad4d75566 100644
  				DYLIB_COMPATIBILITY_VERSION = 3;
  				DYLIB_CURRENT_VERSION = 3;
 -				FRAMEWORK_VERSION = 1.2.56;
-+				FRAMEWORK_VERSION = 1.2.57beta01;
++				FRAMEWORK_VERSION = 1.2.58beta01;
  				GCC_PRECOMPILE_PREFIX_HEADER = NO;
  				GCC_PREFIX_HEADER = "";
  				INFOPLIST_FILE = Info.plist;
@@ -715,22 +994,22 @@ index 899f2adcc..ad4d75566 100644
  				DYLIB_COMPATIBILITY_VERSION = 3;
  				DYLIB_CURRENT_VERSION = 3;
 -				FRAMEWORK_VERSION = 1.2.56;
-+				FRAMEWORK_VERSION = 1.2.57beta01;
++				FRAMEWORK_VERSION = 1.2.58beta01;
  				GCC_PRECOMPILE_PREFIX_HEADER = NO;
  				GCC_PREFIX_HEADER = "";
  				INFOPLIST_FILE = Info.plist;
 diff --git a/scripts/README.txt b/scripts/README.txt
-index 1e0fb7482..ac8f4e625 100644
+index 1e0fb7482..a2cd6dcac 100644
 --- a/scripts/README.txt
 +++ b/scripts/README.txt
 @@ -1,8 +1,8 @@
  
 -Makefiles for  libpng version 1.2.56 - December 17, 2015
-+Makefiles for  libpng version 1.2.57beta01 - January 3, 2016
++Makefiles for  libpng version 1.2.58beta01 - December 30, 2016
  
   makefile.linux    =>  Linux/ELF makefile
 -                       (gcc, creates libpng12.so.0.1.2.56)
-+                       (gcc, creates libpng12.so.0.1.2.57beta01)
++                       (gcc, creates libpng12.so.0.1.2.58beta01)
   makefile.gcc      =>  Generic makefile (gcc, creates static libpng.a)
   makefile.knr      =>  Archaic UNIX Makefile that converts files with
                         ansi2knr (Requires ansi2knr.c from
@@ -739,7 +1018,7 @@ index 1e0fb7482..ac8f4e625 100644
   makefile.dj2      =>  DJGPP 2 makefile
   makefile.elf      =>  Linux/ELF makefile symbol versioning,
 -                       gcc, creates libpng12.so.0.1.2.56)
-+                       gcc, creates libpng12.so.0.1.2.57beta01)
++                       gcc, creates libpng12.so.0.1.2.58beta01)
   makefile.freebsd  =>  FreeBSD makefile
   makefile.gcc      =>  Generic gcc makefile
   makefile.gccmmx   =>  Generic gcc makefile previously using MMX code
@@ -748,22 +1027,22 @@ index 1e0fb7482..ac8f4e625 100644
   makefile.sco      =>  For SCO OSr5  ELF and Unixware 7 with Native cc
   makefile.sggcc    =>  Silicon Graphics (gcc,
 -                       creates libpng12.so.0.1.2.56)
-+                       creates libpng12.so.0.1.2.57beta01)
++                       creates libpng12.so.0.1.2.58beta01)
   makefile.sgi      =>  Silicon Graphics IRIX makefile (cc, creates static lib)
   makefile.solaris  =>  Solaris 2.X makefile (gcc,
 -                       creates libpng12.so.0.1.2.56)
-+                       creates libpng12.so.0.1.2.57beta01)
++                       creates libpng12.so.0.1.2.58beta01)
   makefile.solaris-x86  =>  Solaris 2.X makefile (gcc, no MMX code,
 -                       creates libpng12.so.0.1.2.56)
-+                       creates libpng12.so.0.1.2.57beta01)
++                       creates libpng12.so.0.1.2.58beta01)
   makefile.so9      =>  Solaris 9 makefile (gcc,
 -                       creates libpng12.so.0.1.2.56)
-+                       creates libpng12.so.0.1.2.57beta01)
++                       creates libpng12.so.0.1.2.58beta01)
   makefile.std      =>  Generic UNIX makefile (cc, creates static libpng.a)
   makefile.sunos    =>  Sun makefile
   makefile.32sunu   =>  Sun Ultra 32-bit makefile
 diff --git a/scripts/libpng-config-head.in b/scripts/libpng-config-head.in
-index e9339e1b3..f0e965839 100755
+index e9339e1b3..42269cfa6 100755
 --- a/scripts/libpng-config-head.in
 +++ b/scripts/libpng-config-head.in
 @@ -11,7 +11,7 @@
@@ -771,12 +1050,12 @@ index e9339e1b3..f0e965839 100755
  # Modeled after libxml-config.
  
 -version=1.2.56
-+version=1.2.57beta01
++version=1.2.58beta01
  prefix=""
  libdir=""
  libs=""
 diff --git a/scripts/libpng.pc.in b/scripts/libpng.pc.in
-index 83fe6a604..ca06c38a9 100644
+index 83fe6a604..2ab57acc1 100644
 --- a/scripts/libpng.pc.in
 +++ b/scripts/libpng.pc.in
 @@ -5,6 +5,6 @@ includedir=@includedir@/libpng12
@@ -784,11 +1063,11 @@ index 83fe6a604..ca06c38a9 100644
  Name: libpng
  Description: Loads and saves PNG files
 -Version: 1.2.56
-+Version: 1.2.57beta01
++Version: 1.2.58beta01
  Libs: -L${libdir} -lpng12
  Cflags: -I${includedir}
 diff --git a/scripts/makefile.32sunu b/scripts/makefile.32sunu
-index d2aa4492b..73abf8fcd 100644
+index d2aa4492b..1d22ea5ee 100644
 --- a/scripts/makefile.32sunu
 +++ b/scripts/makefile.32sunu
 @@ -11,7 +11,7 @@
@@ -796,12 +1075,12 @@ index d2aa4492b..73abf8fcd 100644
  LIBNAME=libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.64sunu b/scripts/makefile.64sunu
-index fae56a747..75077c134 100644
+index fae56a747..49686f24d 100644
 --- a/scripts/makefile.64sunu
 +++ b/scripts/makefile.64sunu
 @@ -11,7 +11,7 @@
@@ -809,12 +1088,12 @@ index fae56a747..75077c134 100644
  LIBNAME=libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.aix b/scripts/makefile.aix
-index d85eb343e..78ff1026b 100644
+index d85eb343e..537b7ff45 100644
 --- a/scripts/makefile.aix
 +++ b/scripts/makefile.aix
 @@ -23,7 +23,7 @@ LN_SF = ln -f -s
@@ -822,12 +1101,12 @@ index d85eb343e..78ff1026b 100644
  LIBNAME=libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  prefix=/usr/local
 diff --git a/scripts/makefile.beos b/scripts/makefile.beos
-index 82b3b2788..436897aed 100644
+index 82b3b2788..00eb92ee1 100644
 --- a/scripts/makefile.beos
 +++ b/scripts/makefile.beos
 @@ -11,7 +11,7 @@
@@ -835,12 +1114,12 @@ index 82b3b2788..436897aed 100644
  LIBNAME=libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.cegcc b/scripts/makefile.cegcc
-index 2d541ed61..83fa6eb25 100644
+index 2d541ed61..cdfa207d8 100644
 --- a/scripts/makefile.cegcc
 +++ b/scripts/makefile.cegcc
 @@ -23,7 +23,7 @@
@@ -848,12 +1127,12 @@ index 2d541ed61..83fa6eb25 100644
  VERMAJ = 1
  VERMIN = 2
 -VERMIC = 56
-+VERMIC = 57
++VERMIC = 58
  VER = $(VERMAJ).$(VERMIN).$(VERMIC)
  NAME = libpng
  PACKAGE = $(NAME)-$(VER)
 diff --git a/scripts/makefile.cygwin b/scripts/makefile.cygwin
-index da0d4cba8..d1611062c 100644
+index da0d4cba8..2da8df920 100644
 --- a/scripts/makefile.cygwin
 +++ b/scripts/makefile.cygwin
 @@ -77,7 +77,7 @@ CFLAGS= $(strip $(MINGW_CCFLAGS) $(addprefix -I,$(ZLIBINC)) \
@@ -861,12 +1140,12 @@ index da0d4cba8..d1611062c 100644
  PNGMAJ = 0
  CYGDLL = 12
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  SHAREDLIB=cygpng$(CYGDLL).dll
 diff --git a/scripts/makefile.darwin b/scripts/makefile.darwin
-index d8eb2ad43..1f4ca4033 100644
+index d8eb2ad43..e08f43480 100644
 --- a/scripts/makefile.darwin
 +++ b/scripts/makefile.darwin
 @@ -22,7 +22,7 @@ ZLIBINC=../zlib
@@ -874,12 +1153,12 @@ index d8eb2ad43..1f4ca4033 100644
  LIBNAME = libpng12
  PNGMAJ = 12
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.dec b/scripts/makefile.dec
-index 6e9ffbcd4..7a2ca103e 100644
+index 6e9ffbcd4..341aecfc4 100644
 --- a/scripts/makefile.dec
 +++ b/scripts/makefile.dec
 @@ -8,7 +8,7 @@
@@ -887,12 +1166,12 @@ index 6e9ffbcd4..7a2ca103e 100644
  # Library name:
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  LIBNAME = libpng12
  
 diff --git a/scripts/makefile.elf b/scripts/makefile.elf
-index 64de50f8f..77c01ab8d 100644
+index 64de50f8f..fc36a2120 100644
 --- a/scripts/makefile.elf
 +++ b/scripts/makefile.elf
 @@ -16,7 +16,7 @@
@@ -900,12 +1179,12 @@ index 64de50f8f..77c01ab8d 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.gcmmx b/scripts/makefile.gcmmx
-index 34e1586cd..d42bc4346 100644
+index 34e1586cd..43164c2d4 100644
 --- a/scripts/makefile.gcmmx
 +++ b/scripts/makefile.gcmmx
 @@ -17,7 +17,7 @@
@@ -913,12 +1192,12 @@ index 34e1586cd..d42bc4346 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.hp64 b/scripts/makefile.hp64
-index 3143fa547..5c0fd0181 100644
+index 3143fa547..521958687 100644
 --- a/scripts/makefile.hp64
 +++ b/scripts/makefile.hp64
 @@ -21,7 +21,7 @@ ZLIBINC=/opt/zlib/include
@@ -926,12 +1205,12 @@ index 3143fa547..5c0fd0181 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.hpgcc b/scripts/makefile.hpgcc
-index 5733f283d..708908ca0 100644
+index 5733f283d..43da37a19 100644
 --- a/scripts/makefile.hpgcc
 +++ b/scripts/makefile.hpgcc
 @@ -11,7 +11,7 @@
@@ -939,12 +1218,12 @@ index 5733f283d..708908ca0 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.hpux b/scripts/makefile.hpux
-index 39e94e4db..be5a98516 100644
+index 39e94e4db..c08363a08 100644
 --- a/scripts/makefile.hpux
 +++ b/scripts/makefile.hpux
 @@ -21,7 +21,7 @@ ZLIBINC=/opt/zlib/include
@@ -952,12 +1231,12 @@ index 39e94e4db..be5a98516 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.linux b/scripts/makefile.linux
-index 9cfdbd8b2..c14bb53a3 100644
+index 9cfdbd8b2..43c6dfb27 100644
 --- a/scripts/makefile.linux
 +++ b/scripts/makefile.linux
 @@ -10,7 +10,7 @@
@@ -965,12 +1244,12 @@ index 9cfdbd8b2..c14bb53a3 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.mingw b/scripts/makefile.mingw
-index 615f30b1d..50c9bb67a 100644
+index 615f30b1d..8381cc7d0 100644
 --- a/scripts/makefile.mingw
 +++ b/scripts/makefile.mingw
 @@ -81,7 +81,7 @@ CFLAGS= $(strip $(MINGW_CCFLAGS) $(addprefix -I,$(ZLIBINC)) \
@@ -978,12 +1257,12 @@ index 615f30b1d..50c9bb67a 100644
  PNGMAJ = 0
  MINGDLL = 12
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  SHAREDLIB=libpng$(MINGDLL).dll
 diff --git a/scripts/makefile.ne12bsd b/scripts/makefile.ne12bsd
-index 1fba4ac54..e6203d6fb 100644
+index 1fba4ac54..640b668a7 100644
 --- a/scripts/makefile.ne12bsd
 +++ b/scripts/makefile.ne12bsd
 @@ -17,7 +17,7 @@ INCSDIR=${LOCALBASE}/include/libpng12
@@ -991,12 +1270,12 @@ index 1fba4ac54..e6203d6fb 100644
  LIB=	png12
  SHLIB_MAJOR=	0
 -SHLIB_MINOR=	1.2.56
-+SHLIB_MINOR=	1.2.57beta01
++SHLIB_MINOR=	1.2.58beta01
  SRCS=	png.c pngset.c pngget.c pngrutil.c pngtrans.c pngwutil.c \
  	pngread.c pngrio.c pngwio.c pngwrite.c pngrtran.c \
  	pngwtran.c pngmem.c pngerror.c pngpread.c
 diff --git a/scripts/makefile.netbsd b/scripts/makefile.netbsd
-index d1291bb87..285837055 100644
+index d1291bb87..de80f1834 100644
 --- a/scripts/makefile.netbsd
 +++ b/scripts/makefile.netbsd
 @@ -17,7 +17,7 @@ INCSDIR=${LOCALBASE}/include
@@ -1004,12 +1283,12 @@ index d1291bb87..285837055 100644
  LIB=	png
  SHLIB_MAJOR=	3
 -SHLIB_MINOR=	1.2.56
-+SHLIB_MINOR=	1.2.57beta01
++SHLIB_MINOR=	1.2.58beta01
  SRCS=	png.c pngset.c pngget.c pngrutil.c pngtrans.c pngwutil.c \
  	pngread.c pngrio.c pngwio.c pngwrite.c pngrtran.c \
  	pngwtran.c pngmem.c pngerror.c pngpread.c
 diff --git a/scripts/makefile.nommx b/scripts/makefile.nommx
-index 189eecf57..08abdb9a8 100644
+index 189eecf57..945f59dbc 100644
 --- a/scripts/makefile.nommx
 +++ b/scripts/makefile.nommx
 @@ -10,7 +10,7 @@
@@ -1017,12 +1296,12 @@ index 189eecf57..08abdb9a8 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.openbsd b/scripts/makefile.openbsd
-index 75f898975..08c15b323 100644
+index 75f898975..634a83b0d 100644
 --- a/scripts/makefile.openbsd
 +++ b/scripts/makefile.openbsd
 @@ -11,7 +11,7 @@ LIBDIR=	${PREFIX}/lib
@@ -1030,12 +1309,12 @@ index 75f898975..08c15b323 100644
  
  SHLIB_MAJOR=	0
 -SHLIB_MINOR=	1.2.56
-+SHLIB_MINOR=	1.2.57beta01
++SHLIB_MINOR=	1.2.58beta01
  
  LIB=	png
  SRCS=	png.c pngerror.c pngget.c pngmem.c pngpread.c \
 diff --git a/scripts/makefile.sco b/scripts/makefile.sco
-index dfac44121..3e778edcd 100644
+index dfac44121..164675622 100644
 --- a/scripts/makefile.sco
 +++ b/scripts/makefile.sco
 @@ -12,7 +12,7 @@
@@ -1043,12 +1322,12 @@ index dfac44121..3e778edcd 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.sggcc b/scripts/makefile.sggcc
-index 150c18a36..65e3ff1d4 100644
+index 150c18a36..b472fbdb4 100644
 --- a/scripts/makefile.sggcc
 +++ b/scripts/makefile.sggcc
 @@ -9,7 +9,7 @@
@@ -1056,12 +1335,12 @@ index 150c18a36..65e3ff1d4 100644
  LIBNAME=libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.sgi b/scripts/makefile.sgi
-index 736b511e7..56f06ba36 100644
+index 736b511e7..aa017bd05 100644
 --- a/scripts/makefile.sgi
 +++ b/scripts/makefile.sgi
 @@ -9,7 +9,7 @@
@@ -1069,12 +1348,12 @@ index 736b511e7..56f06ba36 100644
  LIBNAME=libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.so9 b/scripts/makefile.so9
-index 5ec850abb..9619c9743 100644
+index 5ec850abb..c2f4f7f8e 100644
 --- a/scripts/makefile.so9
 +++ b/scripts/makefile.so9
 @@ -11,7 +11,7 @@
@@ -1082,12 +1361,12 @@ index 5ec850abb..9619c9743 100644
  # Library name:
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  LIBNAME = libpng12
  
 diff --git a/scripts/makefile.solaris b/scripts/makefile.solaris
-index a64e3a8c5..05c3c8948 100644
+index a64e3a8c5..12115cf12 100644
 --- a/scripts/makefile.solaris
 +++ b/scripts/makefile.solaris
 @@ -11,7 +11,7 @@
@@ -1095,12 +1374,12 @@ index a64e3a8c5..05c3c8948 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/makefile.solaris-x86 b/scripts/makefile.solaris-x86
-index bad6f5cba..b22f73932 100644
+index bad6f5cba..2eff58ab9 100644
 --- a/scripts/makefile.solaris-x86
 +++ b/scripts/makefile.solaris-x86
 @@ -11,7 +11,7 @@
@@ -1108,12 +1387,12 @@ index bad6f5cba..b22f73932 100644
  LIBNAME = libpng12
  PNGMAJ = 0
 -PNGMIN = 1.2.56
-+PNGMIN = 1.2.57beta01
++PNGMIN = 1.2.58beta01
  PNGVER = $(PNGMAJ).$(PNGMIN)
  
  # Shared library names:
 diff --git a/scripts/png32ce.def b/scripts/png32ce.def
-index a1732e499..080ea62a8 100644
+index a1732e499..622ec9c27 100644
 --- a/scripts/png32ce.def
 +++ b/scripts/png32ce.def
 @@ -5,7 +5,7 @@
@@ -1121,12 +1400,12 @@ index a1732e499..080ea62a8 100644
  
  EXPORTS
 -;Version 1.2.56
-+;Version 1.2.57beta01
++;Version 1.2.58beta01
    png_build_grayscale_palette  @1
    png_check_sig        @2
    png_chunk_error      @3
 diff --git a/scripts/pngos2.def b/scripts/pngos2.def
-index 8b61977cf..f72926084 100644
+index 8b61977cf..59e26bf3a 100644
 --- a/scripts/pngos2.def
 +++ b/scripts/pngos2.def
 @@ -2,7 +2,7 @@
@@ -1134,12 +1413,12 @@ index 8b61977cf..f72926084 100644
  ;----------------------------------------
  
 -; Version 1.2.56
-+; Version 1.2.57beta01
++; Version 1.2.58beta01
  
  LIBRARY		PNG
  DESCRIPTION	"PNG image compression library for OS/2"
 diff --git a/scripts/pngw32.def b/scripts/pngw32.def
-index 490654d9e..8496a890c 100644
+index 490654d9e..b784c1cc2 100644
 --- a/scripts/pngw32.def
 +++ b/scripts/pngw32.def
 @@ -5,7 +5,7 @@
@@ -1147,7 +1426,7 @@ index 490654d9e..8496a890c 100644
  
  EXPORTS
 -;Version 1.2.56
-+;Version 1.2.57beta01
++;Version 1.2.58beta01
    png_build_grayscale_palette  @1
    png_check_sig        @2
    png_chunk_error      @3
