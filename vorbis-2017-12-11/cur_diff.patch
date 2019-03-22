@@ -1,0 +1,547 @@
+diff --git a/.travis.yml b/.travis.yml
+index b3dddcd..5398066 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -1,5 +1,9 @@
+ language: c
+ 
++os:
++  - linux
++  - osx
++
+ compiler:
+   - gcc
+   - clang
+@@ -13,12 +17,9 @@ addons:
+     packages:
+     - libogg-dev
+ 
++install:
++  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew update && brew bundle; fi
++
+ script:
+-  - if [[ "$BUILD_SYSTEM" == "AUTOTOOLS" ]] ; then ./autogen.sh ; fi
+-  - if [[ "$BUILD_SYSTEM" == "AUTOTOOLS" ]] ; then ./configure ; fi
+-  - if [[ "$BUILD_SYSTEM" == "AUTOTOOLS" ]] ; then make -j2 V=1 distcheck ; fi
+-  - if [[ "$BUILD_SYSTEM" == "CMAKE" ]] ; then mkdir build ; fi
+-  - if [[ "$BUILD_SYSTEM" == "CMAKE" ]] ; then pushd build ; fi
+-  - if [[ "$BUILD_SYSTEM" == "CMAKE" ]] ; then cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release .. ; fi
+-  - if [[ "$BUILD_SYSTEM" == "CMAKE" ]] ; then cmake --build . ; fi
+-  - if [[ "$BUILD_SYSTEM" == "CMAKE" ]] ; then popd ; fi
++  - if [[ "$BUILD_SYSTEM" == "AUTOTOOLS" ]] ; then ./autogen.sh && ./configure && make -j2 V=1 distcheck; fi
++  - if [[ "$BUILD_SYSTEM" == "CMAKE" ]] ; then mkdir build && pushd build && cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release .. && cmake --build . && popd; fi
+diff --git a/Brewfile b/Brewfile
+new file mode 100644
+index 0000000..af81e5b
+--- /dev/null
++++ b/Brewfile
+@@ -0,0 +1,3 @@
++brew 'doxygen'
++brew 'libogg'
++brew 'xz'
+diff --git a/CHANGES b/CHANGES
+index c98ccfc..5db9d05 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -1,3 +1,16 @@
++libvorbis 1.3.6 (2018-03-16) -- "Xiph.Org libVorbis I 20180316 (Now 100% fewer shells)"
++
++* Fix CVE-2018-5146 - out-of-bounds write on codebook decoding.
++* Fix CVE-2017-14632 - free() on unitialized data
++* Fix CVE-2017-14633 - out-of-bounds read
++* Fix bitrate metadata parsing.
++* Fix out-of-bounds read in codebook parsing.
++* Fix residue vector size in Vorbis I spec.
++* Appveyor support
++* Travis CI support
++* Add secondary CMake build system.
++* Build system fixes
++
+ libvorbis 1.3.5 (2015-03-03) -- "Xiph.Org libVorbis I 20150105 (⛄⛄⛄⛄)"
+ 
+ * Tolerate single-entry codebooks.
+diff --git a/COPYING b/COPYING
+index 8f1d18c..153b926 100644
+--- a/COPYING
++++ b/COPYING
+@@ -1,4 +1,4 @@
+-Copyright (c) 2002-2015 Xiph.org Foundation
++Copyright (c) 2002-2018 Xiph.org Foundation
+ 
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+diff --git a/Makefile.am b/Makefile.am
+index c35131a..3feaf72 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -26,7 +26,7 @@ EXTRA_DIST = \
+ 	vorbisenc-uninstalled.pc.in \
+ 	vorbisfile-uninstalled.pc.in \
+ 	symbian \
+-	macosx win32
++	macosx win32 CMakeLists.txt
+ 
+ 
+ DISTCHECK_CONFIGURE_FLAGS = --enable-docs
+diff --git a/README.md b/README.md
+index 1748ee2..5e7e501 100644
+--- a/README.md
++++ b/README.md
+@@ -145,5 +145,5 @@ USE, DISTRIBUTION AND REPRODUCTION OF THIS LIBRARY SOURCE IS
+ GOVERNED BY A BSD-STYLE SOURCE LICENSE INCLUDED WITH THIS SOURCE
+ IN 'COPYING'. PLEASE READ THESE TERMS BEFORE DISTRIBUTING.
+ 
+-THE OggVorbis SOURCE CODE IS COPYRIGHT (C) 1994-2015
++THE OggVorbis SOURCE CODE IS COPYRIGHT (C) 1994-2018
+ by the Xiph.Org Foundation https://www.xiph.org/
+diff --git a/configure.ac b/configure.ac
+index 86851b9..28b0a14 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -5,7 +5,7 @@ dnl Initialization and Versioning
+ dnl ------------------------------------------------
+ 
+ 
+-AC_INIT([libvorbis],[1.3.5],[vorbis-dev@xiph.org])
++AC_INIT([libvorbis],[1.3.6],[vorbis-dev@xiph.org])
+ 
+ AC_CONFIG_MACRO_DIR([m4])
+ 
+diff --git a/contrib/oss-fuzz/build.sh b/contrib/oss-fuzz/build.sh
+new file mode 100755
+index 0000000..29e7f38
+--- /dev/null
++++ b/contrib/oss-fuzz/build.sh
+@@ -0,0 +1,23 @@
++#!/bin/bash -eu
++
++pushd $SRC
++mv people.xiph.org/*.ogg decode_corpus/
++zip -r "$OUT/decode_fuzzer_seed_corpus.zip" decode_corpus/
++popd
++
++pushd $SRC/ogg
++./autogen.sh
++./configure --prefix="$WORK" --enable-static --disable-shared --disable-crc
++make clean
++make -j$(nproc)
++make install
++popd
++
++
++./autogen.sh
++./configure --prefix="$WORK" --enable-static --disable-shared
++make clean
++make -j$(nproc)
++make install
++
++$CXX $CXXFLAGS $SRC/vorbis/contrib/oss-fuzz/decode_fuzzer.cc -o $OUT/decode_fuzzer -L"$WORK/lib" -I"$WORK/include" -lFuzzingEngine -lvorbisfile -lvorbis -logg
+diff --git a/contrib/oss-fuzz/decode_fuzzer.cc b/contrib/oss-fuzz/decode_fuzzer.cc
+new file mode 100644
+index 0000000..b8840c1
+--- /dev/null
++++ b/contrib/oss-fuzz/decode_fuzzer.cc
+@@ -0,0 +1,48 @@
++#include <stdio.h>
++#include <string.h>
++#include <cstdint>
++#include <vorbis/vorbisfile.h>
++
++struct vorbis_data {
++  const uint8_t *current;
++  const uint8_t *data;
++  size_t size;
++};
++
++size_t read_func(void *ptr, size_t size1, size_t size2, void *datasource) {
++  vorbis_data* vd = (vorbis_data *)(datasource);
++  size_t len = size1 * size2;
++  if (vd->current + len > vd->data + vd->size) {
++      len = vd->data + vd->size - vd->current;
++  }
++  memcpy(ptr, vd->current, len);
++  vd->current += len;
++  return len;
++}
++
++
++extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
++  ov_callbacks memory_callbacks = {0};
++  memory_callbacks.read_func = read_func;
++  vorbis_data data_st;
++  data_st.size = Size;
++  data_st.current = Data;
++  data_st.data = Data;
++  OggVorbis_File vf;
++  int result = ov_open_callbacks(&data_st, &vf, NULL, 0, memory_callbacks);
++  if (result < 0) {
++    return 0;
++  }
++  int current_section = 0;
++  int eof = 0;
++  char buf[4096];
++  int read_result;
++  while (!eof) {
++    read_result = ov_read(&vf, buf, sizeof(buf), 0, 2, 1, &current_section);
++    if (read_result != OV_HOLE && read_result <= 0) {
++      eof = 1;
++    }
++  }
++  ov_clear(&vf);
++  return 0;
++}
+diff --git a/lib/Makefile.am b/lib/Makefile.am
+index cd5afdf..e22895e 100644
+--- a/lib/Makefile.am
++++ b/lib/Makefile.am
+@@ -35,7 +35,7 @@ psytune_SOURCES = psytune.c
+ psytune_LDFLAGS = -static
+ psytune_LDADD = libvorbis.la
+ 
+-EXTRA_DIST = lookups.pl 
++EXTRA_DIST = lookups.pl CMakeLists.txt
+ 
+ # build and run the self tests on 'make check'
+ 
+diff --git a/lib/codebook.c b/lib/codebook.c
+index 321a28f..78672e2 100644
+--- a/lib/codebook.c
++++ b/lib/codebook.c
+@@ -386,7 +386,7 @@ long vorbis_book_decodevs_add(codebook *book,float *a,oggpack_buffer *b,int n){
+       t[i] = book->valuelist+entry[i]*book->dim;
+     }
+     for(i=0,o=0;i<book->dim;i++,o+=step)
+-      for (j=0;j<step;j++)
++      for (j=0;o+j<n && j<step;j++)
+         a[o+j]+=t[j][i];
+   }
+   return(0);
+@@ -398,41 +398,12 @@ long vorbis_book_decodev_add(codebook *book,float *a,oggpack_buffer *b,int n){
+     int i,j,entry;
+     float *t;
+ 
+-    if(book->dim>8){
+-      for(i=0;i<n;){
+-        entry = decode_packed_entry_number(book,b);
+-        if(entry==-1)return(-1);
+-        t     = book->valuelist+entry*book->dim;
+-        for (j=0;j<book->dim;)
+-          a[i++]+=t[j++];
+-      }
+-    }else{
+-      for(i=0;i<n;){
+-        entry = decode_packed_entry_number(book,b);
+-        if(entry==-1)return(-1);
+-        t     = book->valuelist+entry*book->dim;
+-        j=0;
+-        switch((int)book->dim){
+-        case 8:
+-          a[i++]+=t[j++];
+-        case 7:
+-          a[i++]+=t[j++];
+-        case 6:
+-          a[i++]+=t[j++];
+-        case 5:
+-          a[i++]+=t[j++];
+-        case 4:
+-          a[i++]+=t[j++];
+-        case 3:
+-          a[i++]+=t[j++];
+-        case 2:
+-          a[i++]+=t[j++];
+-        case 1:
+-          a[i++]+=t[j++];
+-        case 0:
+-          break;
+-        }
+-      }
++    for(i=0;i<n;){
++      entry = decode_packed_entry_number(book,b);
++      if(entry==-1)return(-1);
++      t     = book->valuelist+entry*book->dim;
++      for(j=0;i<n && j<book->dim;)
++        a[i++]+=t[j++];
+     }
+   }
+   return(0);
+@@ -470,12 +441,13 @@ long vorbis_book_decodevv_add(codebook *book,float **a,long offset,int ch,
+   long i,j,entry;
+   int chptr=0;
+   if(book->used_entries>0){
+-    for(i=offset/ch;i<(offset+n)/ch;){
++    int m=(offset+n)/ch;
++    for(i=offset/ch;i<m;){
+       entry = decode_packed_entry_number(book,b);
+       if(entry==-1)return(-1);
+       {
+         const float *t = book->valuelist+entry*book->dim;
+-        for (j=0;j<book->dim;j++){
++        for (j=0;i<m && j<book->dim;j++){
+           a[chptr++][i]+=t[j];
+           if(chptr==ch){
+             chptr=0;
+diff --git a/lib/info.c b/lib/info.c
+index 8d0b2ed..4a5e2b3 100644
+--- a/lib/info.c
++++ b/lib/info.c
+@@ -19,7 +19,6 @@
+ 
+ #include <stdlib.h>
+ #include <string.h>
+-#include <ctype.h>
+ #include <ogg/ogg.h>
+ #include "vorbis/codec.h"
+ #include "codec_internal.h"
+@@ -30,8 +29,8 @@
+ #include "misc.h"
+ #include "os.h"
+ 
+-#define GENERAL_VENDOR_STRING "Xiph.Org libVorbis 1.3.5"
+-#define ENCODE_VENDOR_STRING "Xiph.Org libVorbis I 20150105 (⛄⛄⛄⛄)"
++#define GENERAL_VENDOR_STRING "Xiph.Org libVorbis 1.3.6"
++#define ENCODE_VENDOR_STRING "Xiph.Org libVorbis I 20180316 (Now 100% fewer shells)"
+ 
+ /* helpers */
+ static void _v_writestring(oggpack_buffer *o,const char *s, int bytes){
+@@ -47,6 +46,10 @@ static void _v_readstring(oggpack_buffer *o,char *buf,int bytes){
+   }
+ }
+ 
++static int _v_toupper(int c) {
++  return (c >= 'a' && c <= 'z') ? (c & ~('a' - 'A')) : c;
++}
++
+ void vorbis_comment_init(vorbis_comment *vc){
+   memset(vc,0,sizeof(*vc));
+ }
+@@ -78,7 +81,7 @@ void vorbis_comment_add_tag(vorbis_comment *vc, const char *tag, const char *con
+ static int tagcompare(const char *s1, const char *s2, int n){
+   int c=0;
+   while(c < n){
+-    if(toupper(s1[c]) != toupper(s2[c]))
++    if(_v_toupper(s1[c]) != _v_toupper(s2[c]))
+       return !0;
+     c++;
+   }
+@@ -203,6 +206,7 @@ void vorbis_info_clear(vorbis_info *vi){
+ 
+ static int _vorbis_unpack_info(vorbis_info *vi,oggpack_buffer *opb){
+   codec_setup_info     *ci=vi->codec_setup;
++  int bs;
+   if(!ci)return(OV_EFAULT);
+ 
+   vi->version=oggpack_read(opb,32);
+@@ -215,8 +219,12 @@ static int _vorbis_unpack_info(vorbis_info *vi,oggpack_buffer *opb){
+   vi->bitrate_nominal=(ogg_int32_t)oggpack_read(opb,32);
+   vi->bitrate_lower=(ogg_int32_t)oggpack_read(opb,32);
+ 
+-  ci->blocksizes[0]=1<<oggpack_read(opb,4);
+-  ci->blocksizes[1]=1<<oggpack_read(opb,4);
++  bs = oggpack_read(opb,4);
++  if(bs<0)goto err_out;
++  ci->blocksizes[0]=1<<bs;
++  bs = oggpack_read(opb,4);
++  if(bs<0)goto err_out;
++  ci->blocksizes[1]=1<<bs;
+ 
+   if(vi->rate<1)goto err_out;
+   if(vi->channels<1)goto err_out;
+diff --git a/lib/os.h b/lib/os.h
+index 416a401..4e9b280 100644
+--- a/lib/os.h
++++ b/lib/os.h
+@@ -60,7 +60,7 @@ void *_alloca(size_t size);
+ #  define FAST_HYPOT hypot
+ #endif
+ 
+-#endif
++#endif /* _V_IFDEFJAIL_H_ */
+ 
+ #ifdef HAVE_ALLOCA_H
+ #  include <alloca.h>
+@@ -80,7 +80,7 @@ void *_alloca(size_t size);
+ 
+ 
+ /* Special i386 GCC implementation */
+-#if defined(__i386__) && defined(__GNUC__) && !defined(__BEOS__)
++#if defined(__i386__) && defined(__GNUC__) && !defined(__BEOS__) && !defined(__SSE2_MATH__)
+ #  define VORBIS_FPU_CONTROL
+ /* both GCC and MSVC are kinda stupid about rounding/casting to int.
+    Because of encapsulation constraints (GCC can't see inside the asm
+@@ -119,8 +119,7 @@ static inline int vorbis_ftoi(double f){  /* yes, double!  Otherwise,
+ 
+ /* MSVC inline assembly. 32 bit only; inline ASM isn't implemented in the
+  * 64 bit compiler and doesn't work on arm. */
+-#if defined(_MSC_VER) && !defined(_WIN64) && \
+-      !defined(_WIN32_WCE) && !defined(_M_ARM)
++#if defined(_MSC_VER) && defined(_M_IX86) && !defined(_WIN32_WCE)
+ #  define VORBIS_FPU_CONTROL
+ 
+ typedef ogg_int16_t vorbis_fpu_control;
+@@ -147,7 +146,7 @@ static __inline void vorbis_fpu_restore(vorbis_fpu_control fpu){
+ 
+ /* Optimized code path for x86_64 builds. Uses SSE2 intrinsics. This can be
+    done safely because all x86_64 CPUs supports SSE2. */
+-#if (defined(_MSC_VER) && defined(_WIN64)) || (defined(__GNUC__) && defined (__x86_64__))
++#if (defined(_MSC_VER) && defined(_M_X64)) || (defined(__GNUC__) && defined (__SSE2_MATH__))
+ #  define VORBIS_FPU_CONTROL
+ 
+ typedef ogg_int16_t vorbis_fpu_control;
+@@ -174,7 +173,7 @@ static __inline void vorbis_fpu_restore(vorbis_fpu_control fpu){
+ 
+ typedef int vorbis_fpu_control;
+ 
+-static int vorbis_ftoi(double f){
++STIN int vorbis_ftoi(double f){
+         /* Note: MSVC and GCC (at least on some systems) round towards zero, thus,
+            the floor() call is required to ensure correct roudning of
+            negative numbers */
+diff --git a/lib/psy.c b/lib/psy.c
+index 422c6f1..1310123 100644
+--- a/lib/psy.c
++++ b/lib/psy.c
+@@ -602,8 +602,9 @@ static void bark_noise_hybridmp(int n,const long *b,
+   for (i = 0, x = 0.f;; i++, x += 1.f) {
+ 
+     lo = b[i] >> 16;
+-    if( lo>=0 ) break;
+     hi = b[i] & 0xffff;
++    if( lo>=0 ) break;
++    if( hi>=n ) break;
+ 
+     tN = N[hi] + N[-lo];
+     tX = X[hi] - X[-lo];
+diff --git a/lib/res0.c b/lib/res0.c
+index 6d623d7..206494f 100644
+--- a/lib/res0.c
++++ b/lib/res0.c
+@@ -30,9 +30,6 @@
+ #include "misc.h"
+ #include "os.h"
+ 
+-//#define TRAIN_RES 1
+-//#define TRAIN_RESAUX 1
+-
+ #if defined(TRAIN_RES) || defined (TRAIN_RESAUX)
+ #include <stdio.h>
+ #endif
+diff --git a/lib/sharedbook.c b/lib/sharedbook.c
+index 4545d4f..cecfcbc 100644
+--- a/lib/sharedbook.c
++++ b/lib/sharedbook.c
+@@ -50,7 +50,7 @@ long _float32_pack(float val){
+     sign=0x80000000;
+     val= -val;
+   }
+-  exp= floor(log(val)/log(2.f)+.001); //+epsilon
++  exp= floor(log(val)/log(2.f)+.001); /* +epsilon */
+   mant=rint(ldexp(val,(VQ_FMAN-1)-exp));
+   exp=(exp+VQ_FEXP_BIAS)<<VQ_FMAN;
+ 
+@@ -62,7 +62,15 @@ float _float32_unpack(long val){
+   int    sign=val&0x80000000;
+   long   exp =(val&0x7fe00000L)>>VQ_FMAN;
+   if(sign)mant= -mant;
+-  return(ldexp(mant,exp-(VQ_FMAN-1)-VQ_FEXP_BIAS));
++  exp=exp-(VQ_FMAN-1)-VQ_FEXP_BIAS;
++  /* clamp excessive exponent values */
++  if (exp>63){
++    exp=63;
++  }
++  if (exp<-63){
++    exp=-63;
++  }
++  return(ldexp(mant,exp));
+ }
+ 
+ /* given a list of word lengths, generate a list of codewords.  Works
+@@ -294,7 +302,7 @@ int vorbis_book_init_encode(codebook *c,const static_codebook *s){
+   c->used_entries=s->entries;
+   c->dim=s->dim;
+   c->codelist=_make_words(s->lengthlist,s->entries,0);
+-  //c->valuelist=_book_unquantize(s,s->entries,NULL);
++  /* c->valuelist=_book_unquantize(s,s->entries,NULL); */
+   c->quantvals=_book_maptype1_quantvals(s);
+   c->minval=(int)rint(_float32_unpack(s->q_min));
+   c->delta=(int)rint(_float32_unpack(s->q_delta));
+@@ -573,6 +581,7 @@ void run_test(static_codebook *b,float *comp){
+       exit(1);
+     }
+   }
++  free(out);
+ }
+ 
+ int main(){
+diff --git a/lib/vorbisenc.c b/lib/vorbisenc.c
+index 4a4607c..64a51b5 100644
+--- a/lib/vorbisenc.c
++++ b/lib/vorbisenc.c
+@@ -684,6 +684,7 @@ int vorbis_encode_setup_init(vorbis_info *vi){
+   highlevel_encode_setup *hi=&ci->hi;
+ 
+   if(ci==NULL)return(OV_EINVAL);
++  if(vi->channels<1||vi->channels>255)return(OV_EINVAL);
+   if(!hi->impulse_block_p)i0=1;
+ 
+   /* too low/high an ATH floater is nonsensical, but doesn't break anything */
+@@ -1210,7 +1211,7 @@ int vorbis_encode_ctl(vorbis_info *vi,int number,void *arg){
+                                           hi->req,
+                                           hi->managed,
+                                           &new_base);
+-        if(!hi->setup)return OV_EIMPL;
++        if(!new_template)return OV_EIMPL;
+         hi->setup=new_template;
+         hi->base_setting=new_base;
+         vorbis_encode_setup_setting(vi,vi->channels,vi->rate);
+diff --git a/lib/vorbisfile.c b/lib/vorbisfile.c
+index b570c3c..6b7bbee 100644
+--- a/lib/vorbisfile.c
++++ b/lib/vorbisfile.c
+@@ -264,6 +264,10 @@ static ogg_int64_t _get_prev_page_serial(OggVorbis_File *vf, ogg_int64_t begin,
+         }
+       }
+     }
++    /*We started from the beginning of the stream and found nothing.
++      This should be impossible unless the contents of the stream changed out
++      from under us after we read from it.*/
++    if(!begin&&vf->offset<0)return OV_EBADLINK;
+   }
+ 
+   /* we're not interested in the page... just the serialno and granpos. */
+@@ -1230,7 +1234,6 @@ double ov_time_total(OggVorbis_File *vf,int i){
+ 
+ int ov_raw_seek(OggVorbis_File *vf,ogg_int64_t pos){
+   ogg_stream_state work_os;
+-  int ret;
+ 
+   if(vf->ready_state<OPENED)return(OV_EINVAL);
+   if(!vf->seekable)
+@@ -1253,8 +1256,12 @@ int ov_raw_seek(OggVorbis_File *vf,ogg_int64_t pos){
+                             vf->current_serialno); /* must set serialno */
+   vorbis_synthesis_restart(&vf->vd);
+ 
+-  ret=_seek_helper(vf,pos);
+-  if(ret)goto seek_error;
++  if(_seek_helper(vf,pos)) {
++    /* dump the machine so we're in a known state */
++    vf->pcm_offset=-1;
++    _decode_clear(vf);
++    return OV_EBADLINK;
++  }
+ 
+   /* we need to make sure the pcm_offset is set, but we don't want to
+      advance the raw cursor past good packets just to get to the first
+@@ -1388,13 +1395,6 @@ int ov_raw_seek(OggVorbis_File *vf,ogg_int64_t pos){
+   vf->bittrack=0.f;
+   vf->samptrack=0.f;
+   return(0);
+-
+- seek_error:
+-  /* dump the machine so we're in a known state */
+-  vf->pcm_offset=-1;
+-  ogg_stream_clear(&work_os);
+-  _decode_clear(vf);
+-  return OV_EBADLINK;
+ }
+ 
+ /* Page granularity seek (faster than sample granularity because we
