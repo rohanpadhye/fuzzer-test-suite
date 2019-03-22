@@ -1,0 +1,1138 @@
+diff --git a/HTMLtree.c b/HTMLtree.c
+index 5c57fc57..2fd0c9c5 100644
+--- a/HTMLtree.c
++++ b/HTMLtree.c
+@@ -668,7 +668,8 @@ htmlDtdDumpOutput(xmlOutputBufferPtr buf, xmlDocPtr doc,
+ 	    xmlOutputBufferWriteString(buf, " ");
+ 	    xmlBufWriteQuotedString(buf->buffer, cur->SystemID);
+ 	}
+-    }  else if (cur->SystemID != NULL) {
++    } else if (cur->SystemID != NULL &&
++	       xmlStrcmp(cur->SystemID, BAD_CAST "about:legacy-compat")) {
+ 	xmlOutputBufferWriteString(buf, " SYSTEM ");
+ 	xmlBufWriteQuotedString(buf->buffer, cur->SystemID);
+     }
+diff --git a/buf.c b/buf.c
+index 6efc7b67..07922ff6 100644
+--- a/buf.c
++++ b/buf.c
+@@ -27,6 +27,7 @@
+ #include <libxml/tree.h>
+ #include <libxml/globals.h>
+ #include <libxml/tree.h>
++#include <libxml/parserInternals.h> /* for XML_MAX_TEXT_LENGTH */
+ #include "buf.h"
+ 
+ #define WITH_BUFFER_COMPAT
+@@ -299,7 +300,8 @@ xmlBufSetAllocationScheme(xmlBufPtr buf,
+     if ((scheme == XML_BUFFER_ALLOC_DOUBLEIT) ||
+         (scheme == XML_BUFFER_ALLOC_EXACT) ||
+         (scheme == XML_BUFFER_ALLOC_HYBRID) ||
+-        (scheme == XML_BUFFER_ALLOC_IMMUTABLE)) {
++        (scheme == XML_BUFFER_ALLOC_IMMUTABLE) ||
++	(scheme == XML_BUFFER_ALLOC_BOUNDED)) {
+ 	buf->alloc = scheme;
+         if (buf->buffer)
+             buf->buffer->alloc = scheme;
+@@ -458,6 +460,18 @@ xmlBufGrowInternal(xmlBufPtr buf, size_t len) {
+     size = buf->use + len + 100;
+ #endif
+ 
++    if (buf->alloc == XML_BUFFER_ALLOC_BOUNDED) {
++        /*
++	 * Used to provide parsing limits
++	 */
++        if ((buf->use + len >= XML_MAX_TEXT_LENGTH) ||
++	    (buf->size >= XML_MAX_TEXT_LENGTH)) {
++	    xmlBufMemoryError(buf, "buffer error: text too long\n");
++	    return(0);
++	}
++	if (size >= XML_MAX_TEXT_LENGTH)
++	    size = XML_MAX_TEXT_LENGTH;
++    }
+     if ((buf->alloc == XML_BUFFER_ALLOC_IO) && (buf->contentIO != NULL)) {
+         size_t start_buf = buf->content - buf->contentIO;
+ 
+@@ -739,6 +753,15 @@ xmlBufResize(xmlBufPtr buf, size_t size)
+     CHECK_COMPAT(buf)
+ 
+     if (buf->alloc == XML_BUFFER_ALLOC_IMMUTABLE) return(0);
++    if (buf->alloc == XML_BUFFER_ALLOC_BOUNDED) {
++        /*
++	 * Used to provide parsing limits
++	 */
++        if (size >= XML_MAX_TEXT_LENGTH) {
++	    xmlBufMemoryError(buf, "buffer error: text too long\n");
++	    return(0);
++	}
++    }
+ 
+     /* Don't resize if we don't have to */
+     if (size < buf->size)
+@@ -867,6 +890,15 @@ xmlBufAdd(xmlBufPtr buf, const xmlChar *str, int len) {
+ 
+     needSize = buf->use + len + 2;
+     if (needSize > buf->size){
++	if (buf->alloc == XML_BUFFER_ALLOC_BOUNDED) {
++	    /*
++	     * Used to provide parsing limits
++	     */
++	    if (needSize >= XML_MAX_TEXT_LENGTH) {
++		xmlBufMemoryError(buf, "buffer error: text too long\n");
++		return(-1);
++	    }
++	}
+         if (!xmlBufResize(buf, needSize)){
+ 	    xmlBufMemoryError(buf, "growing buffer");
+             return XML_ERR_NO_MEMORY;
+@@ -938,6 +970,15 @@ xmlBufAddHead(xmlBufPtr buf, const xmlChar *str, int len) {
+     }
+     needSize = buf->use + len + 2;
+     if (needSize > buf->size){
++	if (buf->alloc == XML_BUFFER_ALLOC_BOUNDED) {
++	    /*
++	     * Used to provide parsing limits
++	     */
++	    if (needSize >= XML_MAX_TEXT_LENGTH) {
++		xmlBufMemoryError(buf, "buffer error: text too long\n");
++		return(-1);
++	    }
++	}
+         if (!xmlBufResize(buf, needSize)){
+ 	    xmlBufMemoryError(buf, "growing buffer");
+             return XML_ERR_NO_MEMORY;
+diff --git a/include/libxml/tree.h b/include/libxml/tree.h
+index 2f90717c..4a9b3bc6 100644
+--- a/include/libxml/tree.h
++++ b/include/libxml/tree.h
+@@ -76,7 +76,8 @@ typedef enum {
+     XML_BUFFER_ALLOC_EXACT,	/* grow only to the minimal size */
+     XML_BUFFER_ALLOC_IMMUTABLE, /* immutable buffer */
+     XML_BUFFER_ALLOC_IO,	/* special allocation scheme used for I/O */
+-    XML_BUFFER_ALLOC_HYBRID	/* exact up to a threshold, and doubleit thereafter */
++    XML_BUFFER_ALLOC_HYBRID,	/* exact up to a threshold, and doubleit thereafter */
++    XML_BUFFER_ALLOC_BOUNDED	/* limit the upper size of the buffer */
+ } xmlBufferAllocationScheme;
+ 
+ /**
+diff --git a/libxml.spec.in b/libxml.spec.in
+index 242a4fee..9029a180 100644
+--- a/libxml.spec.in
++++ b/libxml.spec.in
+@@ -1,3 +1,5 @@
++%global with_python3 1
++
+ Summary: Library providing XML and HTML support
+ Name: libxml2
+ Version: @VERSION@
+@@ -6,7 +8,13 @@ License: MIT
+ Group: Development/Libraries
+ Source: ftp://xmlsoft.org/libxml2/libxml2-%{version}.tar.gz
+ BuildRoot: %{_tmppath}/%{name}-%{version}-root
+-BuildRequires: python python-devel zlib-devel pkgconfig xz-devel
++BuildRequires: python-devel
++%if 0%{?with_python3}
++BuildRequires: python3-devel
++%endif # with_python3
++BuildRequires: zlib-devel
++BuildRequires: pkgconfig
++BuildRequires: xz-devel
+ URL: http://xmlsoft.org/
+ 
+ %description
+@@ -55,8 +63,8 @@ Group: Development/Libraries
+ Requires: libxml2 = %{version}-%{release}
+ 
+ %description python
+-The libxml2-python package contains a module that permits applications
+-written in the Python programming language to use the interface
++The libxml2-python package contains a Python 2 module that permits applications
++written in the Python programming language, version 2, to use the interface
+ supplied by the libxml2 library to manipulate XML files.
+ 
+ This library allows to manipulate XML files. It includes support
+@@ -64,6 +72,23 @@ to read, modify and write XML and HTML files. There is DTDs support
+ this includes parsing and validation even with complex DTDs, either
+ at parse time or later once the document has been modified.
+ 
++%if 0%{?with_python3}
++%package python3
++Summary: Python 3 bindings for the libxml2 library
++Group: Development/Libraries
++Requires: libxml2 = %{version}-%{release}
++
++%description python3
++The libxml2-python3 package contains a Python 3 module that permits
++applications written in the Python programming language, version 3, to use the
++interface supplied by the libxml2 library to manipulate XML files.
++
++This library allows to manipulate XML files. It includes support
++to read, modify and write XML and HTML files. There is DTDs support
++this includes parsing and validation even with complex DTDs, either
++at parse time or later once the document has been modified.
++%endif # with_python3
++
+ %prep
+ %setup -q
+ 
+@@ -76,6 +101,13 @@ rm -fr %{buildroot}
+ 
+ make install DESTDIR=%{buildroot}
+ 
++%if 0%{?with_python3}
++make clean
++%configure --with-python=%{__python3}
++make install DESTDIR=%{buildroot}
++%endif # with_python3
++
++
+ rm -f $RPM_BUILD_ROOT%{_libdir}/*.la
+ rm -f $RPM_BUILD_ROOT%{_libdir}/python*/site-packages/*.a
+ rm -f $RPM_BUILD_ROOT%{_libdir}/python*/site-packages/*.la
+@@ -136,14 +168,30 @@ rm -fr %{buildroot}
+ %files python
+ %defattr(-, root, root)
+ 
+-%{_libdir}/python*/site-packages/libxml2.py*
+-%{_libdir}/python*/site-packages/drv_libxml2.py*
+-%{_libdir}/python*/site-packages/libxml2mod*
++%{_libdir}/python2*/site-packages/libxml2.py*
++%{_libdir}/python2*/site-packages/drv_libxml2.py*
++%{_libdir}/python2*/site-packages/libxml2mod*
++%doc python/TODO
++%doc python/libxml2class.txt
++%doc python/tests/*.py
++%doc doc/*.py
++%doc doc/python.html
++
++%if 0%{?with_python3}
++%files python3
++%defattr(-, root, root)
++
++%{_libdir}/python3*/site-packages/libxml2.py*
++%{_libdir}/python3*/site-packages/drv_libxml2.py*
++%{_libdir}/python3*/site-packages/__pycache__/libxml2.cpython-34.py*
++%{_libdir}/python3*/site-packages/__pycache__/drv_libxml2.cpython-34.py*
++%{_libdir}/python3*/site-packages/libxml2mod*
+ %doc python/TODO
+ %doc python/libxml2class.txt
+ %doc python/tests/*.py
+ %doc doc/*.py
+ %doc doc/python.html
++%endif # with_python3
+ 
+ %changelog
+ * @RELDATE@ Daniel Veillard <veillard@redhat.com>
+diff --git a/libxml2-config.cmake.in b/libxml2-config.cmake.in
+index ac293291..6b16fc2e 100644
+--- a/libxml2-config.cmake.in
++++ b/libxml2-config.cmake.in
+@@ -21,7 +21,7 @@ set(LIBXML2_VERSION_MINOR  @LIBXML_MINOR_VERSION@)
+ set(LIBXML2_VERSION_MICRO  @LIBXML_MICRO_VERSION@)
+ set(LIBXML2_VERSION_STRING "@VERSION@")
+ set(LIBXML2_INSTALL_PREFIX ${_libxml2_rootdir})
+-set(LIBXML2_INCLUDE_DIRS   ${_libxml2_rootdir}/include)
++set(LIBXML2_INCLUDE_DIRS   ${_libxml2_rootdir}/include ${_libxml2_rootdir}/include/libxml2)
+ set(LIBXML2_LIBRARY_DIR    ${_libxml2_rootdir}/lib)
+ set(LIBXML2_LIBRARIES      -L${LIBXML2_LIBRARY_DIR} -lxml2)
+ 
+diff --git a/parser.c b/parser.c
+index 1d939678..fe603aca 100644
+--- a/parser.c
++++ b/parser.c
+@@ -5658,6 +5658,7 @@ xmlParseEntityDecl(xmlParserCtxtPtr ctxt) {
+ 	if (RAW != '>') {
+ 	    xmlFatalErrMsgStr(ctxt, XML_ERR_ENTITY_NOT_FINISHED,
+ 	            "xmlParseEntityDecl: entity %s not terminated\n", name);
++	    xmlStopParser(ctxt);
+ 	} else {
+ 	    if (input != ctxt->input) {
+ 		xmlFatalErrMsg(ctxt, XML_ERR_ENTITY_BOUNDARY,
+@@ -6769,6 +6770,8 @@ xmlParseConditionalSections(xmlParserCtxtPtr ctxt) {
+ 	SKIP_BLANKS;
+ 	if (RAW != '[') {
+ 	    xmlFatalErr(ctxt, XML_ERR_CONDSEC_INVALID, NULL);
++	    xmlStopParser(ctxt);
++	    return;
+ 	} else {
+ 	    if (ctxt->input->id != id) {
+ 		xmlValidityError(ctxt, XML_ERR_ENTITY_BOUNDARY,
+@@ -6829,6 +6832,8 @@ xmlParseConditionalSections(xmlParserCtxtPtr ctxt) {
+ 	SKIP_BLANKS;
+ 	if (RAW != '[') {
+ 	    xmlFatalErr(ctxt, XML_ERR_CONDSEC_INVALID, NULL);
++	    xmlStopParser(ctxt);
++	    return;
+ 	} else {
+ 	    if (ctxt->input->id != id) {
+ 		xmlValidityError(ctxt, XML_ERR_ENTITY_BOUNDARY,
+@@ -6884,6 +6889,8 @@ xmlParseConditionalSections(xmlParserCtxtPtr ctxt) {
+ 
+     } else {
+ 	xmlFatalErr(ctxt, XML_ERR_CONDSEC_INVALID_KEYWORD, NULL);
++	xmlStopParser(ctxt);
++	return;
+     }
+ 
+     if (RAW == 0)
+@@ -7235,7 +7242,8 @@ xmlParseReference(xmlParserCtxtPtr ctxt) {
+      * far more secure as the parser will only process data coming from
+      * the document entity by default.
+      */
+-    if ((ent->checked == 0) &&
++    if (((ent->checked == 0) ||
++         ((ent->children == NULL) && (ctxt->options & XML_PARSE_NOENT))) &&
+         ((ent->etype != XML_EXTERNAL_GENERAL_PARSED_ENTITY) ||
+          (ctxt->options & (XML_PARSE_NOENT | XML_PARSE_DTDVALID)))) {
+ 	unsigned long oldnbent = ctxt->nbentities;
+@@ -14829,9 +14837,6 @@ xmlInitParser(void) {
+ #endif
+ #ifdef LIBXML_XPATH_ENABLED
+ 	xmlXPathInit();
+-#endif
+-#ifdef LIBXML_CATALOG_ENABLED
+-        xmlInitializeCatalog();
+ #endif
+ 	xmlParserInitialized = 1;
+ #ifdef LIBXML_THREAD_ENABLED
+diff --git a/relaxng.c b/relaxng.c
+index 8d88e957..5779e7fc 100644
+--- a/relaxng.c
++++ b/relaxng.c
+@@ -3819,7 +3819,11 @@ xmlRelaxNGCompareNameClasses(xmlRelaxNGDefinePtr def1,
+             return (0);
+         return (1);
+     } else if (def1->type == XML_RELAXNG_EXCEPT) {
+-        TODO ret = 0;
++        ret = xmlRelaxNGCompareNameClasses(def1->content, def2);
++	if (ret == 0)
++	    ret = 1;
++	else if (ret == 1)
++	    ret = 0;
+     } else {
+         TODO ret = 0;
+     }
+@@ -9859,7 +9863,7 @@ xmlRelaxNGValidateState(xmlRelaxNGValidCtxtPtr ctxt,
+     ctxt->depth++;
+     switch (define->type) {
+         case XML_RELAXNG_EMPTY:
+-            node = xmlRelaxNGSkipIgnored(ctxt, node);
++            xmlRelaxNGSkipIgnored(ctxt, node);
+             ret = 0;
+             break;
+         case XML_RELAXNG_NOT_ALLOWED:
+diff --git a/result/XPath/tests/chaptersbase b/result/XPath/tests/chaptersbase
+index 03c65670..e023bf01 100644
+--- a/result/XPath/tests/chaptersbase
++++ b/result/XPath/tests/chaptersbase
+@@ -113,3 +113,13 @@ Set contains 5 nodes:
+     ATTRIBUTE id
+       TEXT
+         content=chapter5
++
++========================
++Expression: //p[1]
++Object is a Node Set :
++Set contains 5 nodes:
++1  ELEMENT p
++2  ELEMENT p
++3  ELEMENT p
++4  ELEMENT p
++5  ELEMENT p
+diff --git a/result/XPath/tests/simplebase b/result/XPath/tests/simplebase
+index 38fa1449..3c32d17e 100644
+--- a/result/XPath/tests/simplebase
++++ b/result/XPath/tests/simplebase
+@@ -59,6 +59,60 @@ Set contains 3 nodes:
+ 3  TEXT
+     content=   
+ 
++========================
++Expression: /child::EXAMPLE/attribute::prop1/self::node()
++Object is a Node Set :
++Set contains 1 nodes:
++1  ATTRIBUTE prop1
++    TEXT
++      content=gnome is great
++
++========================
++Expression: /child::EXAMPLE/attribute::prop1/self::*
++Object is a Node Set :
++Set contains 0 nodes:
++
++========================
++Expression: /child::EXAMPLE/attribute::prop1/descendant-or-self::node()
++Object is a Node Set :
++Set contains 1 nodes:
++1  ATTRIBUTE prop1
++    TEXT
++      content=gnome is great
++
++========================
++Expression: /child::EXAMPLE/attribute::prop1/descendant-or-self::*
++Object is a Node Set :
++Set contains 0 nodes:
++
++========================
++Expression: /child::EXAMPLE/attribute::prop1/ancestor-or-self::node()
++Object is a Node Set :
++Set contains 3 nodes:
++1   /
++2  ELEMENT EXAMPLE
++    ATTRIBUTE prop1
++      TEXT
++        content=gnome is great
++    ATTRIBUTE prop2
++      TEXT
++        content=& linux too
++3  ATTRIBUTE prop1
++    TEXT
++      content=gnome is great
++
++========================
++Expression: /child::EXAMPLE/attribute::prop1/ancestor-or-self::*
++Object is a Node Set :
++Set contains 1 nodes:
++1  ELEMENT EXAMPLE
++    ATTRIBUTE prop1
++      TEXT
++        content=gnome is great
++    ATTRIBUTE prop2
++      TEXT
++        content=& linux too
++
+ ========================
+ Expression: /descendant::title
+ Object is a Node Set :
+diff --git a/result/ent_738805.xml b/result/ent_738805.xml
+new file mode 100644
+index 00000000..d285eee2
+--- /dev/null
++++ b/result/ent_738805.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0" encoding="ISO-8859-1"?>
++<!DOCTYPE somedoc [
++<!ENTITY a "something">
++<!ENTITY b "&a;">
++]>
++<somedoc>
++
++<somebeacon someattribute="&b;"/>
++
++&a; should appear after colon: &a;
++&b; should appear after colon: &a;
++&a; should appear after colon: &b;
++&b; should appear after colon: &b;
++
++</somedoc>
+diff --git a/result/ent_738805.xml.rde b/result/ent_738805.xml.rde
+new file mode 100644
+index 00000000..fa086fe6
+--- /dev/null
++++ b/result/ent_738805.xml.rde
+@@ -0,0 +1,15 @@
++0 10 somedoc 0 0
++0 1 somedoc 0 0
++1 14 #text 0 1 
++
++
++1 1 somebeacon 1 0
++1 3 #text 0 1 
++
++something should appear after colon: something
++something should appear after colon: something
++something should appear after colon: something
++something should appear after colon: something
++
++
++0 15 somedoc 0 0
+diff --git a/result/ent_738805.xml.rdr b/result/ent_738805.xml.rdr
+new file mode 100644
+index 00000000..c52dbf12
+--- /dev/null
++++ b/result/ent_738805.xml.rdr
+@@ -0,0 +1,31 @@
++0 10 somedoc 0 0
++0 1 somedoc 0 0
++1 14 #text 0 1 
++
++
++1 1 somebeacon 1 0
++1 14 #text 0 1 
++
++
++1 5 a 0 0
++1 3 #text 0 1  should appear after colon: 
++1 5 a 0 0
++1 14 #text 0 1 
++
++1 5 b 0 0
++1 3 #text 0 1  should appear after colon: 
++1 5 a 0 0
++1 14 #text 0 1 
++
++1 5 a 0 0
++1 3 #text 0 1  should appear after colon: 
++1 5 b 0 0
++1 14 #text 0 1 
++
++1 5 b 0 0
++1 3 #text 0 1  should appear after colon: 
++1 5 b 0 0
++1 14 #text 0 1 
++
++
++0 15 somedoc 0 0
+diff --git a/result/ent_738805.xml.sax b/result/ent_738805.xml.sax
+new file mode 100644
+index 00000000..2649117d
+--- /dev/null
++++ b/result/ent_738805.xml.sax
+@@ -0,0 +1,66 @@
++SAX.setDocumentLocator()
++SAX.startDocument()
++SAX.internalSubset(somedoc, , )
++SAX.entityDecl(a, 1, (null), (null), something)
++SAX.getEntity(a)
++SAX.entityDecl(b, 1, (null), (null), &a;)
++SAX.getEntity(b)
++SAX.externalSubset(somedoc, , )
++SAX.startElement(somedoc)
++SAX.characters(
++
++, 2)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.startElement(somebeacon, someattribute='&b;')
++SAX.endElement(somebeacon)
++SAX.characters(
++
++, 2)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters(
++, 1)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters(
++, 1)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters(
++, 1)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters(
++
++, 2)
++SAX.endElement(somedoc)
++SAX.endDocument()
+diff --git a/result/ent_738805.xml.sax2 b/result/ent_738805.xml.sax2
+new file mode 100644
+index 00000000..1eae7817
+--- /dev/null
++++ b/result/ent_738805.xml.sax2
+@@ -0,0 +1,66 @@
++SAX.setDocumentLocator()
++SAX.startDocument()
++SAX.internalSubset(somedoc, , )
++SAX.entityDecl(a, 1, (null), (null), something)
++SAX.getEntity(a)
++SAX.entityDecl(b, 1, (null), (null), &a;)
++SAX.getEntity(b)
++SAX.externalSubset(somedoc, , )
++SAX.startElementNs(somedoc, NULL, NULL, 0, 0, 0)
++SAX.characters(
++
++, 2)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.startElementNs(somebeacon, NULL, NULL, 0, 1, 0, someattribute='&b;...', 3)
++SAX.endElementNs(somebeacon, NULL, NULL)
++SAX.characters(
++
++, 2)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters(
++, 1)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters(
++, 1)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters(
++, 1)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters( should appear after colon: , 28)
++SAX.getEntity(b)
++SAX.getEntity(a)
++SAX.characters(something, 9)
++SAX.reference(a)
++SAX.reference(b)
++SAX.characters(
++
++, 2)
++SAX.endElementNs(somedoc, NULL, NULL)
++SAX.endDocument()
+diff --git a/result/noent/ent_738805.xml b/result/noent/ent_738805.xml
+new file mode 100644
+index 00000000..5e44a55c
+--- /dev/null
++++ b/result/noent/ent_738805.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0" encoding="ISO-8859-1"?>
++<!DOCTYPE somedoc [
++<!ENTITY a "something">
++<!ENTITY b "&a;">
++]>
++<somedoc>
++
++<somebeacon someattribute="something"/>
++
++something should appear after colon: something
++something should appear after colon: something
++something should appear after colon: something
++something should appear after colon: something
++
++</somedoc>
+diff --git a/result/relaxng/565219_0 b/result/relaxng/565219_0
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/result/relaxng/565219_0.err b/result/relaxng/565219_0.err
+new file mode 100644
+index 00000000..e3f73fac
+--- /dev/null
++++ b/result/relaxng/565219_0.err
+@@ -0,0 +1,2 @@
++./test/relaxng/565219_0.xml:1: element foo: Relax-NG validity error : Element foo has wrong namespace: expecting http://bar.com/
++./test/relaxng/565219_0.xml fails to validate
+diff --git a/result/relaxng/565219_1 b/result/relaxng/565219_1
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/result/relaxng/565219_1.err b/result/relaxng/565219_1.err
+new file mode 100644
+index 00000000..2999bbae
+--- /dev/null
++++ b/result/relaxng/565219_1.err
+@@ -0,0 +1 @@
++./test/relaxng/565219_1.xml validates
+diff --git a/result/relaxng/565219_2 b/result/relaxng/565219_2
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/result/relaxng/565219_2.err b/result/relaxng/565219_2.err
+new file mode 100644
+index 00000000..7a997d35
+--- /dev/null
++++ b/result/relaxng/565219_2.err
+@@ -0,0 +1,2 @@
++./test/relaxng/565219_2.xml:1: element foo: Relax-NG validity error : Element foo has wrong namespace: expecting http://bar.com/
++./test/relaxng/565219_2.xml fails to validate
+diff --git a/result/relaxng/565219_err b/result/relaxng/565219_err
+new file mode 100644
+index 00000000..c43e67cf
+--- /dev/null
++++ b/result/relaxng/565219_err
+@@ -0,0 +1 @@
++./test/relaxng/565219.rng validates
+diff --git a/result/relaxng/565219_valid b/result/relaxng/565219_valid
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/test/XPath/tests/chaptersbase b/test/XPath/tests/chaptersbase
+index daa53b75..17638f73 100644
+--- a/test/XPath/tests/chaptersbase
++++ b/test/XPath/tests/chaptersbase
+@@ -7,3 +7,4 @@
+ /child::EXAMPLE/child::head/node()
+ /descendant::title
+ /descendant::p/ancestor::chapter
++//p[1]
+diff --git a/test/XPath/tests/simplebase b/test/XPath/tests/simplebase
+index 7e4203af..8b2c7d15 100644
+--- a/test/XPath/tests/simplebase
++++ b/test/XPath/tests/simplebase
+@@ -5,5 +5,11 @@
+ /child::EXAMPLE/child::head/child::title
+ /child::EXAMPLE/child::head/child::title/child::text()
+ /child::EXAMPLE/child::head/node()
++/child::EXAMPLE/attribute::prop1/self::node()
++/child::EXAMPLE/attribute::prop1/self::*
++/child::EXAMPLE/attribute::prop1/descendant-or-self::node()
++/child::EXAMPLE/attribute::prop1/descendant-or-self::*
++/child::EXAMPLE/attribute::prop1/ancestor-or-self::node()
++/child::EXAMPLE/attribute::prop1/ancestor-or-self::*
+ /descendant::title
+ /descendant::p/ancestor::chapter
+diff --git a/test/ent_738805.xml b/test/ent_738805.xml
+new file mode 100644
+index 00000000..9ec70b17
+--- /dev/null
++++ b/test/ent_738805.xml
+@@ -0,0 +1,16 @@
++<?xml version="1.0" encoding="ISO-8859-1"?>
++<!DOCTYPE  somedoc [
++  <!ENTITY a   "something">
++  <!ENTITY b   "&a;">
++]>
++
++<somedoc>
++
++<somebeacon someattribute="&b;"/>
++
++&a; should appear after colon: &a;
++&b; should appear after colon: &a;
++&a; should appear after colon: &b;
++&b; should appear after colon: &b;
++
++</somedoc>
+diff --git a/test/relaxng/565219.rng b/test/relaxng/565219.rng
+new file mode 100644
+index 00000000..087ed956
+--- /dev/null
++++ b/test/relaxng/565219.rng
+@@ -0,0 +1,14 @@
++<grammar xmlns="http://relaxng.org/ns/structure/1.0">
++  <start>
++   <element>
++      <anyName>
++        <except>
++          <nsName ns="http://bar.com/"/>
++          <nsName ns="http://foo.com/"/>
++        </except>
++      </anyName>
++      <empty/>
++   </element>
++  </start>
++</grammar>
++
+diff --git a/test/relaxng/565219_0.xml b/test/relaxng/565219_0.xml
+new file mode 100644
+index 00000000..a964a07b
+--- /dev/null
++++ b/test/relaxng/565219_0.xml
+@@ -0,0 +1 @@
++<foo xmlns="http://foo.com/"/>
+diff --git a/test/relaxng/565219_1.xml b/test/relaxng/565219_1.xml
+new file mode 100644
+index 00000000..f1999f80
+--- /dev/null
++++ b/test/relaxng/565219_1.xml
+@@ -0,0 +1 @@
++<foo/>
+diff --git a/test/relaxng/565219_2.xml b/test/relaxng/565219_2.xml
+new file mode 100644
+index 00000000..a964a07b
+--- /dev/null
++++ b/test/relaxng/565219_2.xml
+@@ -0,0 +1 @@
++<foo xmlns="http://foo.com/"/>
+diff --git a/testdict.c b/testdict.c
+index 4e8581f8..40bebd05 100644
+--- a/testdict.c
++++ b/testdict.c
+@@ -277,7 +277,7 @@ static int run_test2(xmlDictPtr parent) {
+ 	cur++;
+ 	*pref = 0;
+ 	tmp = xmlDictQLookup(dict, &prefix[0], cur);
+-	if (xmlDictQLookup(dict, &prefix[0], cur) != test2[i]) {
++	if (tmp != test2[i]) {
+ 	    fprintf(stderr, "Failed lookup check for '%s':'%s'\n",
+ 	            &prefix[0], cur);
+             ret = 1;
+@@ -408,7 +408,7 @@ static int run_test1(void) {
+ 	cur++;
+ 	*pref = 0;
+ 	tmp = xmlDictQLookup(dict, &prefix[0], cur);
+-	if (xmlDictQLookup(dict, &prefix[0], cur) != test1[i]) {
++	if (tmp != test1[i]) {
+ 	    fprintf(stderr, "Failed lookup check for '%s':'%s'\n",
+ 	            &prefix[0], cur);
+             ret = 1;
+diff --git a/threads.c b/threads.c
+index 8921204b..b9d6cae3 100644
+--- a/threads.c
++++ b/threads.c
+@@ -47,7 +47,7 @@
+ #ifdef HAVE_PTHREAD_H
+ 
+ static int libxml_is_threaded = -1;
+-#ifdef __GNUC__
++#if defined(__GNUC__) && defined(__GLIBC__)
+ #ifdef linux
+ #if (__GNUC__ == 3 && __GNUC_MINOR__ >= 3) || (__GNUC__ > 3)
+ extern int pthread_once (pthread_once_t *__once_control,
+@@ -89,7 +89,7 @@ extern int pthread_cond_signal ()
+ 	   __attribute((weak));
+ #endif
+ #endif /* linux */
+-#endif /* __GNUC__ */
++#endif /* defined(__GNUC__) && defined(__GLIBC__) */
+ #endif /* HAVE_PTHREAD_H */
+ 
+ /*
+@@ -415,8 +415,8 @@ xmlRMutexUnlock(xmlRMutexPtr tok ATTRIBUTE_UNUSED)
+     pthread_mutex_unlock(&tok->lock);
+ #elif defined HAVE_WIN32_THREADS
+     if (tok->count > 0) {
+-        LeaveCriticalSection(&tok->cs);
+ 	tok->count--;
++        LeaveCriticalSection(&tok->cs);
+     }
+ #elif defined HAVE_BEOS_THREADS
+     if (tok->lock->tid == find_thread(NULL)) {
+diff --git a/timsort.h b/timsort.h
+index efa3aab1..795f2721 100644
+--- a/timsort.h
++++ b/timsort.h
+@@ -392,62 +392,66 @@ static void TIM_SORT_MERGE(SORT_TYPE *dst, const TIM_SORT_RUN_T *stack, const in
+ 
+ static int TIM_SORT_COLLAPSE(SORT_TYPE *dst, TIM_SORT_RUN_T *stack, int stack_curr, TEMP_STORAGE_T *store, const size_t size)
+ {
+-  while (1)
+-  {
+-    int64_t A, B, C;
++  while (1) {
++    int64_t A, B, C, D;
++    int ABC, BCD, BD, CD;
++
+     /* if the stack only has one thing on it, we are done with the collapse */
+-    if (stack_curr <= 1) break;
++    if (stack_curr <= 1) {
++      break;
++    }
++
+     /* if this is the last merge, just do it */
+-    if ((stack_curr == 2) &&
+-        (stack[0].length + stack[1].length == (int64_t) size))
+-    {
++    if ((stack_curr == 2) && (stack[0].length + stack[1].length == size)) {
+       TIM_SORT_MERGE(dst, stack, stack_curr, store);
+       stack[0].length += stack[1].length;
+       stack_curr--;
+       break;
+     }
+     /* check if the invariant is off for a stack of 2 elements */
+-    else if ((stack_curr == 2) && (stack[0].length <= stack[1].length))
+-    {
++    else if ((stack_curr == 2) && (stack[0].length <= stack[1].length)) {
+       TIM_SORT_MERGE(dst, stack, stack_curr, store);
+       stack[0].length += stack[1].length;
+       stack_curr--;
+       break;
+-    }
+-    else if (stack_curr == 2)
++    } else if (stack_curr == 2) {
+       break;
++    }
+ 
+-    A = stack[stack_curr - 3].length;
+-    B = stack[stack_curr - 2].length;
+-    C = stack[stack_curr - 1].length;
++    B = stack[stack_curr - 3].length;
++    C = stack[stack_curr - 2].length;
++    D = stack[stack_curr - 1].length;
+ 
+-    /* check first invariant */
+-    if (A <= B + C)
+-    {
+-      if (A < C)
+-      {
+-        TIM_SORT_MERGE(dst, stack, stack_curr - 1, store);
+-        stack[stack_curr - 3].length += stack[stack_curr - 2].length;
+-        stack[stack_curr - 2] = stack[stack_curr - 1];
+-        stack_curr--;
+-      }
+-      else
+-      {
+-        TIM_SORT_MERGE(dst, stack, stack_curr, store);
+-        stack[stack_curr - 2].length += stack[stack_curr - 1].length;
+-        stack_curr--;
+-      }
++    if (stack_curr >= 4) {
++      A = stack[stack_curr - 4].length;
++      ABC = (A <= B + C);
++    } else {
++      ABC = 0;
+     }
+-    /* check second invariant */
+-    else if (B <= C)
+-    {
++
++    BCD = (B <= C + D) || ABC;
++    CD = (C <= D);
++    BD = (B < D);
++
++    /* Both invariants are good */
++    if (!BCD && !CD) {
++      break;
++    }
++
++    /* left merge */
++    if (BCD && !CD) {
++      TIM_SORT_MERGE(dst, stack, stack_curr - 1, store);
++      stack[stack_curr - 3].length += stack[stack_curr - 2].length;
++      stack[stack_curr - 2] = stack[stack_curr - 1];
++      stack_curr--;
++    } else {
++      /* right merge */
+       TIM_SORT_MERGE(dst, stack, stack_curr, store);
+       stack[stack_curr - 2].length += stack[stack_curr - 1].length;
+       stack_curr--;
+     }
+-    else
+-      break;
+   }
++
+   return stack_curr;
+ }
+ 
+diff --git a/tree.c b/tree.c
+index 307782cf..6a158cec 100644
+--- a/tree.c
++++ b/tree.c
+@@ -1451,9 +1451,9 @@ xmlStringLenGetNodeList(const xmlDoc *doc, const xmlChar *value, int len) {
+ 	node->content = xmlBufDetach(buf);
+ 
+ 	if (last == NULL) {
+-	    last = ret = node;
++	    ret = node;
+ 	} else {
+-	    last = xmlAddNextSibling(last, node);
++	    xmlAddNextSibling(last, node);
+ 	}
+     } else if (ret == NULL) {
+         ret = xmlNewDocText(doc, BAD_CAST "");
+@@ -1639,9 +1639,9 @@ xmlStringGetNodeList(const xmlDoc *doc, const xmlChar *value) {
+ 	node->content = xmlBufDetach(buf);
+ 
+ 	if (last == NULL) {
+-	    last = ret = node;
++	    ret = node;
+ 	} else {
+-	    last = xmlAddNextSibling(last, node);
++	    xmlAddNextSibling(last, node);
+ 	}
+     }
+ 
+@@ -2799,8 +2799,27 @@ xmlSetTreeDoc(xmlNodePtr tree, xmlDocPtr doc) {
+ 	if(tree->type == XML_ELEMENT_NODE) {
+ 	    prop = tree->properties;
+ 	    while (prop != NULL) {
++                if (prop->atype == XML_ATTRIBUTE_ID) {
++                    xmlRemoveID(tree->doc, prop);
++                }
++
+ 		prop->doc = doc;
+ 		xmlSetListDoc(prop->children, doc);
++
++                /*
++                 * TODO: ID attributes should be also added to the new
++                 * document, but this breaks things like xmlReplaceNode.
++                 * The underlying problem is that xmlRemoveID is only called
++                 * if a node is destroyed, not if it's unlinked.
++                 */
++#if 0
++                if (xmlIsID(doc, tree, prop)) {
++                    xmlChar *idVal = xmlNodeListGetString(doc, prop->children,
++                                                          1);
++                    xmlAddID(NULL, doc, idVal, prop);
++                }
++#endif
++
+ 		prop = prop->next;
+ 	    }
+ 	}
+diff --git a/win32/configure.js b/win32/configure.js
+index edd943a6..92b9ba05 100644
+--- a/win32/configure.js
++++ b/win32/configure.js
+@@ -14,7 +14,7 @@ var srcDirUtils = "..";
+ var baseName = "libxml2";
+ /* Configure file which contains the version and the output file where
+    we can store our build configuration. */
+-var configFile = srcDirXml + "\\configure.in";
++var configFile = srcDirXml + "\\configure.ac";
+ var versionFile = ".\\config.msvc";
+ /* Input and output files regarding the libxml features. */
+ var optsFileIn = srcDirXml + "\\include\\libxml\\xmlversion.h.in";
+diff --git a/xmlmemory.c b/xmlmemory.c
+index a3dc737f..f24fd6d4 100644
+--- a/xmlmemory.c
++++ b/xmlmemory.c
+@@ -554,7 +554,12 @@ xmlMemoryStrdup(const char *str) {
+ 
+ int
+ xmlMemUsed(void) {
+-     return(debugMemSize);
++    int res;
++
++    xmlMutexLock(xmlMemMutex);
++    res = debugMemSize;
++    xmlMutexUnlock(xmlMemMutex);
++    return(res);
+ }
+ 
+ /**
+@@ -567,7 +572,12 @@ xmlMemUsed(void) {
+ 
+ int
+ xmlMemBlocks(void) {
+-     return(debugMemBlocks);
++    int res;
++
++    xmlMutexLock(xmlMemMutex);
++    res = debugMemBlocks;
++    xmlMutexUnlock(xmlMemMutex);
++    return(res);
+ }
+ 
+ #ifdef MEM_LIST
+diff --git a/xmlreader.c b/xmlreader.c
+index f19e1233..471e7e2a 100644
+--- a/xmlreader.c
++++ b/xmlreader.c
+@@ -2091,6 +2091,9 @@ xmlNewTextReader(xmlParserInputBufferPtr input, const char *URI) {
+ 		"xmlNewTextReader : malloc failed\n");
+ 	return(NULL);
+     }
++    /* no operation on a reader should require a huge buffer */
++    xmlBufSetAllocationScheme(ret->buffer,
++			      XML_BUFFER_ALLOC_BOUNDED);
+     ret->sax = (xmlSAXHandler *) xmlMalloc(sizeof(xmlSAXHandler));
+     if (ret->sax == NULL) {
+ 	xmlBufFree(ret->buffer);
+@@ -3616,6 +3619,7 @@ xmlTextReaderConstValue(xmlTextReaderPtr reader) {
+ 	    return(((xmlNsPtr) node)->href);
+         case XML_ATTRIBUTE_NODE:{
+ 	    xmlAttrPtr attr = (xmlAttrPtr) node;
++	    const xmlChar *ret;
+ 
+ 	    if ((attr->children != NULL) &&
+ 	        (attr->children->type == XML_TEXT_NODE) &&
+@@ -3629,10 +3633,21 @@ xmlTextReaderConstValue(xmlTextReaderPtr reader) {
+                                         "xmlTextReaderSetup : malloc failed\n");
+                         return (NULL);
+                     }
++		    xmlBufSetAllocationScheme(reader->buffer,
++		                              XML_BUFFER_ALLOC_BOUNDED);
+                 } else
+                     xmlBufEmpty(reader->buffer);
+ 	        xmlBufGetNodeContent(reader->buffer, node);
+-		return(xmlBufContent(reader->buffer));
++		ret = xmlBufContent(reader->buffer);
++		if (ret == NULL) {
++		    /* error on the buffer best to reallocate */
++		    xmlBufFree(reader->buffer);
++		    reader->buffer = xmlBufCreateSize(100);
++		    xmlBufSetAllocationScheme(reader->buffer,
++		                              XML_BUFFER_ALLOC_BOUNDED);
++		    ret = BAD_CAST "";
++		}
++		return(ret);
+ 	    }
+ 	    break;
+ 	}
+@@ -5131,6 +5146,9 @@ xmlTextReaderSetup(xmlTextReaderPtr reader,
+                         "xmlTextReaderSetup : malloc failed\n");
+         return (-1);
+     }
++    /* no operation on a reader should require a huge buffer */
++    xmlBufSetAllocationScheme(reader->buffer,
++			      XML_BUFFER_ALLOC_BOUNDED);
+     if (reader->sax == NULL)
+ 	reader->sax = (xmlSAXHandler *) xmlMalloc(sizeof(xmlSAXHandler));
+     if (reader->sax == NULL) {
+diff --git a/xpath.c b/xpath.c
+index dc41ce6b..e9f5bf92 100644
+--- a/xpath.c
++++ b/xpath.c
+@@ -361,13 +361,13 @@ turtle_comparison:
+     /*
+      * compute depth to root
+      */
+-    for (depth2 = 0, cur = node2;cur->parent != NULL;cur = cur->parent) {
++    for (depth2 = 0, cur = node2; cur != NULL; cur = cur->parent) {
+ 	if (cur == node1)
+ 	    return(1);
+ 	depth2++;
+     }
+     root = cur;
+-    for (depth1 = 0, cur = node1;cur->parent != NULL;cur = cur->parent) {
++    for (depth1 = 0, cur = node1; cur != NULL; cur = cur->parent) {
+ 	if (cur == node2)
+ 	    return(-1);
+ 	depth1++;
+@@ -7933,14 +7933,14 @@ xmlXPathNextDescendant(xmlXPathParserContextPtr ctxt, xmlNodePtr cur) {
+ xmlNodePtr
+ xmlXPathNextDescendantOrSelf(xmlXPathParserContextPtr ctxt, xmlNodePtr cur) {
+     if ((ctxt == NULL) || (ctxt->context == NULL)) return(NULL);
+-    if (cur == NULL) {
+-	if (ctxt->context->node == NULL)
+-	    return(NULL);
+-	if ((ctxt->context->node->type == XML_ATTRIBUTE_NODE) ||
+-	    (ctxt->context->node->type == XML_NAMESPACE_DECL))
+-	    return(NULL);
++    if (cur == NULL)
+         return(ctxt->context->node);
+-    }
++
++    if (ctxt->context->node == NULL)
++        return(NULL);
++    if ((ctxt->context->node->type == XML_ATTRIBUTE_NODE) ||
++        (ctxt->context->node->type == XML_NAMESPACE_DECL))
++        return(NULL);
+ 
+     return(xmlXPathNextDescendant(ctxt, cur));
+ }
