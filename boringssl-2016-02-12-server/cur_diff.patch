@@ -523,6 +523,1585 @@ index b4ea7e51b..2fed41390 100644
  
  #if defined(__cplusplus)
  }  /* extern C */
+diff --git a/crypto/curve25519/curve25519.c b/crypto/curve25519/curve25519.c
+index 28559c929..61bbdcedc 100644
+--- a/crypto/curve25519/curve25519.c
++++ b/crypto/curve25519/curve25519.c
+@@ -1049,7 +1049,7 @@ static const fe d = {-10913610, 13857413, -15372611, 6949391,   114729,
+ static const fe sqrtm1 = {-32595792, -7943725,  9377950,  3500415, 12389472,
+                           -272473,   -25146209, -2005654, 326686,  11406482};
+ 
+-static int ge_frombytes_negate_vartime(ge_p3 *h, const uint8_t *s) {
++static int ge_frombytes_vartime(ge_p3 *h, const uint8_t *s) {
+   fe u;
+   fe v;
+   fe v3;
+@@ -1084,7 +1084,7 @@ static int ge_frombytes_negate_vartime(ge_p3 *h, const uint8_t *s) {
+     fe_mul(h->X, h->X, sqrtm1);
+   }
+ 
+-  if (fe_isnegative(h->X) == (s[31] >> 7)) {
++  if (fe_isnegative(h->X) != (s[31] >> 7)) {
+     fe_neg(h->X, h->X);
+   }
+ 
+@@ -4655,10 +4655,13 @@ int ED25519_verify(const uint8_t *message, size_t message_len,
+                    const uint8_t signature[64], const uint8_t public_key[32]) {
+   ge_p3 A;
+   if ((signature[63] & 224) != 0 ||
+-      ge_frombytes_negate_vartime(&A, public_key) != 0) {
++      ge_frombytes_vartime(&A, public_key) != 0) {
+     return 0;
+   }
+ 
++  fe_neg(A.X, A.X);
++  fe_neg(A.T, A.T);
++
+   uint8_t pkcopy[32];
+   memcpy(pkcopy, public_key, 32);
+   uint8_t rcopy[32];
+diff --git a/crypto/dsa/dsa.c b/crypto/dsa/dsa.c
+index 1e446920b..979079d89 100644
+--- a/crypto/dsa/dsa.c
++++ b/crypto/dsa/dsa.c
+@@ -61,7 +61,6 @@
+ 
+ #include <string.h>
+ 
+-#include <openssl/asn1.h>
+ #include <openssl/bn.h>
+ #include <openssl/dh.h>
+ #include <openssl/digest.h>
+@@ -73,7 +72,6 @@
+ #include <openssl/sha.h>
+ #include <openssl/thread.h>
+ 
+-#include "internal.h"
+ #include "../internal.h"
+ 
+ 
+@@ -94,7 +92,6 @@ DSA *DSA_new(void) {
+ 
+   memset(dsa, 0, sizeof(DSA));
+ 
+-  dsa->write_params = 1;
+   dsa->references = 1;
+ 
+   CRYPTO_MUTEX_init(&dsa->method_mont_p_lock);
+@@ -393,6 +390,21 @@ err:
+   return ok;
+ }
+ 
++DSA *DSAparams_dup(const DSA *dsa) {
++  DSA *ret = DSA_new();
++  if (ret == NULL) {
++    return NULL;
++  }
++  ret->p = BN_dup(dsa->p);
++  ret->q = BN_dup(dsa->q);
++  ret->g = BN_dup(dsa->g);
++  if (ret->p == NULL || ret->q == NULL || ret->g == NULL) {
++    DSA_free(ret);
++    return NULL;
++  }
++  return ret;
++}
++
+ int DSA_generate_key(DSA *dsa) {
+   int ok = 0;
+   BN_CTX *ctx = NULL;
+@@ -740,24 +752,38 @@ err:
+   return ret;
+ }
+ 
+-int DSA_size(const DSA *dsa) {
+-  int ret, i;
+-  ASN1_INTEGER bs;
+-  unsigned char buf[4]; /* 4 bytes looks really small.
+-                           However, i2d_ASN1_INTEGER() will not look
+-                           beyond the first byte, as long as the second
+-                           parameter is NULL. */
++/* der_len_len returns the number of bytes needed to represent a length of |len|
++ * in DER. */
++static size_t der_len_len(size_t len) {
++  if (len < 0x80) {
++    return 1;
++  }
++  size_t ret = 1;
++  while (len > 0) {
++    ret++;
++    len >>= 8;
++  }
++  return ret;
++}
+ 
+-  i = BN_num_bits(dsa->q);
+-  bs.length = (i + 7) / 8;
+-  bs.data = buf;
+-  bs.type = V_ASN1_INTEGER;
+-  /* If the top bit is set the asn1 encoding is 1 larger. */
+-  buf[0] = 0xff;
+-
+-  i = i2d_ASN1_INTEGER(&bs, NULL);
+-  i += i; /* r and s */
+-  ret = ASN1_object_size(1, i, V_ASN1_SEQUENCE);
++int DSA_size(const DSA *dsa) {
++  size_t order_len = BN_num_bytes(dsa->q);
++  /* Compute the maximum length of an |order_len| byte integer. Defensively
++   * assume that the leading 0x00 is included. */
++  size_t integer_len = 1 /* tag */ + der_len_len(order_len + 1) + 1 + order_len;
++  if (integer_len < order_len) {
++    return 0;
++  }
++  /* A DSA signature is two INTEGERs. */
++  size_t value_len = 2 * integer_len;
++  if (value_len < integer_len) {
++    return 0;
++  }
++  /* Add the header. */
++  size_t ret = 1 /* tag */ + der_len_len(value_len) + value_len;
++  if (ret < value_len) {
++    return 0;
++  }
+   return ret;
+ }
+ 
+diff --git a/crypto/dsa/dsa_asn1.c b/crypto/dsa/dsa_asn1.c
+index b6b3fa4de..7615fca2b 100644
+--- a/crypto/dsa/dsa_asn1.c
++++ b/crypto/dsa/dsa_asn1.c
+@@ -54,97 +54,282 @@
+ 
+ #include <openssl/dsa.h>
+ 
+-#include <string.h>
++#include <assert.h>
+ 
+-#include <openssl/asn1.h>
+-#include <openssl/asn1t.h>
++#include <openssl/bn.h>
++#include <openssl/bytestring.h>
+ #include <openssl/err.h>
+ #include <openssl/mem.h>
+ 
+-#include "internal.h"
++#include "../bytestring/internal.h"
+ 
+ 
+-static int dsa_sig_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+-                      void *exarg) {
+-  if (operation != ASN1_OP_NEW_PRE) {
+-    return 1;
++static int parse_integer(CBS *cbs, BIGNUM **out) {
++  assert(*out == NULL);
++  *out = BN_new();
++  if (*out == NULL) {
++    return 0;
+   }
++  return BN_parse_asn1_unsigned(cbs, *out);
++}
+ 
+-  DSA_SIG *sig;
+-  sig = OPENSSL_malloc(sizeof(DSA_SIG));
+-  if (!sig) {
+-    OPENSSL_PUT_ERROR(DSA, ERR_R_MALLOC_FAILURE);
++static int marshal_integer(CBB *cbb, BIGNUM *bn) {
++  if (bn == NULL) {
++    /* A DSA object may be missing some components. */
++    OPENSSL_PUT_ERROR(DSA, ERR_R_PASSED_NULL_PARAMETER);
+     return 0;
+   }
+-
+-  memset(sig, 0, sizeof(DSA_SIG));
+-  *pval = (ASN1_VALUE *)sig;
+-  return 2;
++  return BN_marshal_asn1(cbb, bn);
+ }
+ 
+-ASN1_SEQUENCE_cb(DSA_SIG, dsa_sig_cb) = {
+-    ASN1_SIMPLE(DSA_SIG, r, CBIGNUM),
+-    ASN1_SIMPLE(DSA_SIG, s, CBIGNUM)} ASN1_SEQUENCE_END_cb(DSA_SIG, DSA_SIG);
++DSA_SIG *DSA_SIG_parse(CBS *cbs) {
++  DSA_SIG *ret = DSA_SIG_new();
++  if (ret == NULL) {
++    return NULL;
++  }
++  CBS child;
++  if (!CBS_get_asn1(cbs, &child, CBS_ASN1_SEQUENCE) ||
++      !parse_integer(&child, &ret->r) ||
++      !parse_integer(&child, &ret->s) ||
++      CBS_len(&child) != 0) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_DECODE_ERROR);
++    DSA_SIG_free(ret);
++    return NULL;
++  }
++  return ret;
++}
+ 
+-IMPLEMENT_ASN1_ENCODE_FUNCTIONS_const_fname(DSA_SIG, DSA_SIG, DSA_SIG);
++int DSA_SIG_marshal(CBB *cbb, const DSA_SIG *sig) {
++  CBB child;
++  if (!CBB_add_asn1(cbb, &child, CBS_ASN1_SEQUENCE) ||
++      !marshal_integer(&child, sig->r) ||
++      !marshal_integer(&child, sig->s) ||
++      !CBB_flush(cbb)) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_ENCODE_ERROR);
++    return 0;
++  }
++  return 1;
++}
+ 
++DSA *DSA_parse_public_key(CBS *cbs) {
++  DSA *ret = DSA_new();
++  if (ret == NULL) {
++    return NULL;
++  }
++  CBS child;
++  if (!CBS_get_asn1(cbs, &child, CBS_ASN1_SEQUENCE) ||
++      !parse_integer(&child, &ret->pub_key) ||
++      !parse_integer(&child, &ret->p) ||
++      !parse_integer(&child, &ret->q) ||
++      !parse_integer(&child, &ret->g) ||
++      CBS_len(&child) != 0) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_DECODE_ERROR);
++    DSA_free(ret);
++    return NULL;
++  }
++  return ret;
++}
+ 
+-static int dsa_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+-                  void *exarg) {
+-  switch (operation) {
+-    case ASN1_OP_NEW_PRE:
+-      *pval = (ASN1_VALUE *)DSA_new();
+-      if (*pval) {
+-        return 2;
+-      }
+-      return 0;
++int DSA_marshal_public_key(CBB *cbb, const DSA *dsa) {
++  CBB child;
++  if (!CBB_add_asn1(cbb, &child, CBS_ASN1_SEQUENCE) ||
++      !marshal_integer(&child, dsa->pub_key) ||
++      !marshal_integer(&child, dsa->p) ||
++      !marshal_integer(&child, dsa->q) ||
++      !marshal_integer(&child, dsa->g) ||
++      !CBB_flush(cbb)) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_ENCODE_ERROR);
++    return 0;
++  }
++  return 1;
++}
+ 
+-    case ASN1_OP_FREE_PRE:
+-      DSA_free((DSA *)*pval);
+-      *pval = NULL;
+-      return 2;
++DSA *DSA_parse_parameters(CBS *cbs) {
++  DSA *ret = DSA_new();
++  if (ret == NULL) {
++    return NULL;
++  }
++  CBS child;
++  if (!CBS_get_asn1(cbs, &child, CBS_ASN1_SEQUENCE) ||
++      !parse_integer(&child, &ret->p) ||
++      !parse_integer(&child, &ret->q) ||
++      !parse_integer(&child, &ret->g) ||
++      CBS_len(&child) != 0) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_DECODE_ERROR);
++    DSA_free(ret);
++    return NULL;
++  }
++  return ret;
++}
+ 
+-    default:
+-      return 1;
++int DSA_marshal_parameters(CBB *cbb, const DSA *dsa) {
++  CBB child;
++  if (!CBB_add_asn1(cbb, &child, CBS_ASN1_SEQUENCE) ||
++      !marshal_integer(&child, dsa->p) ||
++      !marshal_integer(&child, dsa->q) ||
++      !marshal_integer(&child, dsa->g) ||
++      !CBB_flush(cbb)) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_ENCODE_ERROR);
++    return 0;
+   }
++  return 1;
+ }
+ 
+-ASN1_SEQUENCE_cb(DSAPrivateKey, dsa_cb) = {
+-    ASN1_SIMPLE(DSA, version, LONG),
+-    ASN1_SIMPLE(DSA, p, BIGNUM),
+-    ASN1_SIMPLE(DSA, q, BIGNUM),
+-    ASN1_SIMPLE(DSA, g, BIGNUM),
+-    ASN1_SIMPLE(DSA, pub_key, BIGNUM),
+-    ASN1_SIMPLE(DSA, priv_key, BIGNUM)} ASN1_SEQUENCE_END_cb(DSA,
+-                                                             DSAPrivateKey);
++DSA *DSA_parse_private_key(CBS *cbs) {
++  DSA *ret = DSA_new();
++  if (ret == NULL) {
++    return NULL;
++  }
++
++  CBS child;
++  uint64_t version;
++  if (!CBS_get_asn1(cbs, &child, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1_uint64(&child, &version)) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_DECODE_ERROR);
++    goto err;
++  }
++
++  if (version != 0) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_BAD_VERSION);
++    goto err;
++  }
++
++  if (!parse_integer(&child, &ret->p) ||
++      !parse_integer(&child, &ret->q) ||
++      !parse_integer(&child, &ret->g) ||
++      !parse_integer(&child, &ret->pub_key) ||
++      !parse_integer(&child, &ret->priv_key) ||
++      CBS_len(&child) != 0) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_DECODE_ERROR);
++    goto err;
++  }
++  return ret;
++
++err:
++  DSA_free(ret);
++  return NULL;
++}
+ 
+-IMPLEMENT_ASN1_ENCODE_FUNCTIONS_const_fname(DSA, DSAPrivateKey, DSAPrivateKey);
++int DSA_marshal_private_key(CBB *cbb, const DSA *dsa) {
++  CBB child;
++  if (!CBB_add_asn1(cbb, &child, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1_uint64(&child, 0 /* version */) ||
++      !marshal_integer(&child, dsa->p) ||
++      !marshal_integer(&child, dsa->q) ||
++      !marshal_integer(&child, dsa->g) ||
++      !marshal_integer(&child, dsa->pub_key) ||
++      !marshal_integer(&child, dsa->priv_key) ||
++      !CBB_flush(cbb)) {
++    OPENSSL_PUT_ERROR(DSA, DSA_R_ENCODE_ERROR);
++    return 0;
++  }
++  return 1;
++}
+ 
+-ASN1_SEQUENCE_cb(DSAparams, dsa_cb) = {
+-    ASN1_SIMPLE(DSA, p, BIGNUM), ASN1_SIMPLE(DSA, q, BIGNUM),
+-    ASN1_SIMPLE(DSA, g, BIGNUM), } ASN1_SEQUENCE_END_cb(DSA, DSAparams);
++DSA_SIG *d2i_DSA_SIG(DSA_SIG **out_sig, const uint8_t **inp, long len) {
++  if (len < 0) {
++    return NULL;
++  }
++  CBS cbs;
++  CBS_init(&cbs, *inp, (size_t)len);
++  DSA_SIG *ret = DSA_SIG_parse(&cbs);
++  if (ret == NULL) {
++    return NULL;
++  }
++  if (out_sig != NULL) {
++    DSA_SIG_free(*out_sig);
++    *out_sig = ret;
++  }
++  *inp = CBS_data(&cbs);
++  return ret;
++}
+ 
+-IMPLEMENT_ASN1_ENCODE_FUNCTIONS_const_fname(DSA, DSAparams, DSAparams);
++int i2d_DSA_SIG(const DSA_SIG *in, uint8_t **outp) {
++  CBB cbb;
++  if (!CBB_init(&cbb, 0) ||
++      !DSA_SIG_marshal(&cbb, in)) {
++    return -1;
++  }
++  return CBB_finish_i2d(&cbb, outp);
++}
+ 
++DSA *d2i_DSAPublicKey(DSA **out, const uint8_t **inp, long len) {
++  if (len < 0) {
++    return NULL;
++  }
++  CBS cbs;
++  CBS_init(&cbs, *inp, (size_t)len);
++  DSA *ret = DSA_parse_public_key(&cbs);
++  if (ret == NULL) {
++    return NULL;
++  }
++  if (out != NULL) {
++    DSA_free(*out);
++    *out = ret;
++  }
++  *inp = CBS_data(&cbs);
++  return ret;
++}
+ 
+-/* DSA public key is a bit trickier... its effectively a CHOICE type decided by
+- * a field called write_params which can either write out just the public key
+- * as an INTEGER or the parameters and public key in a SEQUENCE. */
++int i2d_DSAPublicKey(const DSA *in, uint8_t **outp) {
++  CBB cbb;
++  if (!CBB_init(&cbb, 0) ||
++      !DSA_marshal_public_key(&cbb, in)) {
++    return -1;
++  }
++  return CBB_finish_i2d(&cbb, outp);
++}
+ 
+-ASN1_SEQUENCE(dsa_pub_internal) = {
+-	ASN1_SIMPLE(DSA, pub_key, BIGNUM),
+-	ASN1_SIMPLE(DSA, p, BIGNUM),
+-	ASN1_SIMPLE(DSA, q, BIGNUM),
+-	ASN1_SIMPLE(DSA, g, BIGNUM)
+-} ASN1_SEQUENCE_END_name(DSA, dsa_pub_internal);
++DSA *d2i_DSAPrivateKey(DSA **out, const uint8_t **inp, long len) {
++  if (len < 0) {
++    return NULL;
++  }
++  CBS cbs;
++  CBS_init(&cbs, *inp, (size_t)len);
++  DSA *ret = DSA_parse_private_key(&cbs);
++  if (ret == NULL) {
++    return NULL;
++  }
++  if (out != NULL) {
++    DSA_free(*out);
++    *out = ret;
++  }
++  *inp = CBS_data(&cbs);
++  return ret;
++}
+ 
+-ASN1_CHOICE_cb(DSAPublicKey, dsa_cb) = {
+-	ASN1_SIMPLE(DSA, pub_key, BIGNUM),
+-	ASN1_EX_COMBINE(0, 0, dsa_pub_internal)
+-} ASN1_CHOICE_END_cb(DSA, DSAPublicKey, write_params);
++int i2d_DSAPrivateKey(const DSA *in, uint8_t **outp) {
++  CBB cbb;
++  if (!CBB_init(&cbb, 0) ||
++      !DSA_marshal_private_key(&cbb, in)) {
++    return -1;
++  }
++  return CBB_finish_i2d(&cbb, outp);
++}
+ 
+-IMPLEMENT_ASN1_ENCODE_FUNCTIONS_const_fname(DSA, DSAPublicKey, DSAPublicKey);
++DSA *d2i_DSAparams(DSA **out, const uint8_t **inp, long len) {
++  if (len < 0) {
++    return NULL;
++  }
++  CBS cbs;
++  CBS_init(&cbs, *inp, (size_t)len);
++  DSA *ret = DSA_parse_parameters(&cbs);
++  if (ret == NULL) {
++    return NULL;
++  }
++  if (out != NULL) {
++    DSA_free(*out);
++    *out = ret;
++  }
++  *inp = CBS_data(&cbs);
++  return ret;
++}
+ 
+-DSA *DSAparams_dup(const DSA *dsa) {
+-  return ASN1_item_dup(ASN1_ITEM_rptr(DSAparams), (DSA*) dsa);
++int i2d_DSAparams(const DSA *in, uint8_t **outp) {
++  CBB cbb;
++  if (!CBB_init(&cbb, 0) ||
++      !DSA_marshal_parameters(&cbb, in)) {
++    return -1;
++  }
++  return CBB_finish_i2d(&cbb, outp);
+ }
+diff --git a/crypto/dsa/dsa_test.c b/crypto/dsa/dsa_test.c
+index 8bdaaf444..6296c8f06 100644
+--- a/crypto/dsa/dsa_test.c
++++ b/crypto/dsa/dsa_test.c
+@@ -65,8 +65,6 @@
+ #include <openssl/crypto.h>
+ #include <openssl/err.h>
+ 
+-#include "internal.h"
+-
+ 
+ static int dsa_cb(int p, int n, BN_GENCB *arg);
+ 
+diff --git a/crypto/dsa/internal.h b/crypto/dsa/internal.h
+deleted file mode 100644
+index ef991585c..000000000
+--- a/crypto/dsa/internal.h
++++ /dev/null
+@@ -1,78 +0,0 @@
+-/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+- * All rights reserved.
+- *
+- * This package is an SSL implementation written
+- * by Eric Young (eay@cryptsoft.com).
+- * The implementation was written so as to conform with Netscapes SSL.
+- *
+- * This library is free for commercial and non-commercial use as long as
+- * the following conditions are aheared to.  The following conditions
+- * apply to all code found in this distribution, be it the RC4, RSA,
+- * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+- * included with this distribution is covered by the same copyright terms
+- * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+- *
+- * Copyright remains Eric Young's, and as such any Copyright notices in
+- * the code are not to be removed.
+- * If this package is used in a product, Eric Young should be given attribution
+- * as the author of the parts of the library used.
+- * This can be in the form of a textual message at program startup or
+- * in documentation (online or textual) provided with the package.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the copyright
+- *    notice, this list of conditions and the following disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- * 3. All advertising materials mentioning features or use of this software
+- *    must display the following acknowledgement:
+- *    "This product includes cryptographic software written by
+- *     Eric Young (eay@cryptsoft.com)"
+- *    The word 'cryptographic' can be left out if the rouines from the library
+- *    being used are not cryptographic related :-).
+- * 4. If you include any Windows specific code (or a derivative thereof) from
+- *    the apps directory (application code) you must include an acknowledgement:
+- *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+- *
+- * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- *
+- * The licence and distribution terms for any publically available version or
+- * derivative of this code cannot be changed.  i.e. this code cannot simply be
+- * copied and put under another distribution licence
+- * [including the GNU Public Licence.]
+- *
+- * The DSS routines are based on patches supplied by
+- * Steven Schoch <schoch@sheba.arc.nasa.gov>. */
+-
+-#ifndef OPENSSL_HEADER_DSA_INTERNAL_H
+-#define OPENSSL_HEADER_DSA_INTERNAL_H
+-
+-#include <openssl/base.h>
+-
+-#include <openssl/bn.h>
+-#include <openssl/ex_data.h>
+-
+-#if defined(__cplusplus)
+-extern "C" {
+-#endif
+-
+-
+-
+-#if defined(__cplusplus)
+-}  /* extern C */
+-#endif
+-
+-#endif  /* OPENSSL_HEADER_DSA_INTERNAL_H */
+diff --git a/crypto/ec/ec_asn1.c b/crypto/ec/ec_asn1.c
+index a085be533..a29a2dcfc 100644
+--- a/crypto/ec/ec_asn1.c
++++ b/crypto/ec/ec_asn1.c
+@@ -53,472 +53,405 @@
+ 
+ #include <openssl/ec.h>
+ 
++#include <limits.h>
+ #include <string.h>
+ 
+-#include <openssl/asn1.h>
+-#include <openssl/asn1t.h>
++#include <openssl/bytestring.h>
+ #include <openssl/bn.h>
+ #include <openssl/err.h>
+ #include <openssl/mem.h>
+ #include <openssl/obj.h>
+ 
+ #include "internal.h"
++#include "../bytestring/internal.h"
++
++
++static const uint8_t kParametersTag =
++    CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 0;
++static const uint8_t kPublicKeyTag =
++    CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 1;
++
++EC_KEY *EC_KEY_parse_private_key(CBS *cbs, const EC_GROUP *group) {
++  CBS ec_private_key, private_key;
++  uint64_t version;
++  if (!CBS_get_asn1(cbs, &ec_private_key, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1_uint64(&ec_private_key, &version) ||
++      version != 1 ||
++      !CBS_get_asn1(&ec_private_key, &private_key, CBS_ASN1_OCTETSTRING)) {
++    OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++    return NULL;
++  }
+ 
+-
+-typedef struct x9_62_fieldid_st {
+-  ASN1_OBJECT *fieldType;
+-  union {
+-    char *ptr;
+-    /* NID_X9_62_prime_field */
+-    ASN1_INTEGER *prime;
+-    /* anything else */
+-    ASN1_TYPE *other;
+-  } p;
+-} X9_62_FIELDID;
+-
+-ASN1_ADB_TEMPLATE(fieldID_def) = ASN1_SIMPLE(X9_62_FIELDID, p.other, ASN1_ANY);
+-
+-ASN1_ADB(X9_62_FIELDID) = {
+-  ADB_ENTRY(NID_X9_62_prime_field, ASN1_SIMPLE(X9_62_FIELDID, p.prime, ASN1_INTEGER)),
+-} ASN1_ADB_END(X9_62_FIELDID, 0, fieldType, 0, &fieldID_def_tt, NULL);
+-
+-ASN1_SEQUENCE(X9_62_FIELDID) = {
+-  ASN1_SIMPLE(X9_62_FIELDID, fieldType, ASN1_OBJECT),
+-  ASN1_ADB_OBJECT(X9_62_FIELDID)
+-} ASN1_SEQUENCE_END(X9_62_FIELDID);
+-
+-typedef struct x9_62_curve_st {
+-  ASN1_OCTET_STRING *a;
+-  ASN1_OCTET_STRING *b;
+-  ASN1_BIT_STRING *seed;
+-} X9_62_CURVE;
+-
+-ASN1_SEQUENCE(X9_62_CURVE) = {
+-  ASN1_SIMPLE(X9_62_CURVE, a, ASN1_OCTET_STRING),
+-  ASN1_SIMPLE(X9_62_CURVE, b, ASN1_OCTET_STRING),
+-  ASN1_OPT(X9_62_CURVE, seed, ASN1_BIT_STRING)
+-} ASN1_SEQUENCE_END(X9_62_CURVE);
+-
+-typedef struct ec_parameters_st {
+-  long version;
+-  X9_62_FIELDID *fieldID;
+-  X9_62_CURVE *curve;
+-  ASN1_OCTET_STRING *base;
+-  ASN1_INTEGER *order;
+-  ASN1_INTEGER *cofactor;
+-} ECPARAMETERS;
+-
+-DECLARE_ASN1_ALLOC_FUNCTIONS(ECPARAMETERS);
+-
+-ASN1_SEQUENCE(ECPARAMETERS) = {
+-    ASN1_SIMPLE(ECPARAMETERS, version, LONG),
+-    ASN1_SIMPLE(ECPARAMETERS, fieldID, X9_62_FIELDID),
+-    ASN1_SIMPLE(ECPARAMETERS, curve, X9_62_CURVE),
+-    ASN1_SIMPLE(ECPARAMETERS, base, ASN1_OCTET_STRING),
+-    ASN1_SIMPLE(ECPARAMETERS, order, ASN1_INTEGER),
+-    ASN1_OPT(ECPARAMETERS, cofactor, ASN1_INTEGER)
+-} ASN1_SEQUENCE_END(ECPARAMETERS);
+-
+-IMPLEMENT_ASN1_ALLOC_FUNCTIONS(ECPARAMETERS);
+-
+-typedef struct ecpk_parameters_st {
+-  int type;
+-  union {
+-    ASN1_OBJECT *named_curve;
+-    ECPARAMETERS *parameters;
+-  } value;
+-} ECPKPARAMETERS;
+-
+-/* SEC1 ECPrivateKey */
+-typedef struct ec_privatekey_st {
+-  long version;
+-  ASN1_OCTET_STRING *privateKey;
+-  ECPKPARAMETERS *parameters;
+-  ASN1_BIT_STRING *publicKey;
+-} EC_PRIVATEKEY;
+-
+-DECLARE_ASN1_FUNCTIONS_const(ECPKPARAMETERS);
+-DECLARE_ASN1_ENCODE_FUNCTIONS_const(ECPKPARAMETERS, ECPKPARAMETERS);
+-
+-ASN1_CHOICE(ECPKPARAMETERS) = {
+-    ASN1_SIMPLE(ECPKPARAMETERS, value.named_curve, ASN1_OBJECT),
+-    ASN1_SIMPLE(ECPKPARAMETERS, value.parameters, ECPARAMETERS),
+-} ASN1_CHOICE_END(ECPKPARAMETERS);
+-
+-IMPLEMENT_ASN1_FUNCTIONS_const(ECPKPARAMETERS);
+-
+-DECLARE_ASN1_FUNCTIONS_const(EC_PRIVATEKEY);
+-DECLARE_ASN1_ENCODE_FUNCTIONS_const(EC_PRIVATEKEY, EC_PRIVATEKEY);
+-
+-ASN1_SEQUENCE(EC_PRIVATEKEY) = {
+-    ASN1_SIMPLE(EC_PRIVATEKEY, version, LONG),
+-    ASN1_SIMPLE(EC_PRIVATEKEY, privateKey, ASN1_OCTET_STRING),
+-    ASN1_EXP_OPT(EC_PRIVATEKEY, parameters, ECPKPARAMETERS, 0),
+-    ASN1_EXP_OPT(EC_PRIVATEKEY, publicKey, ASN1_BIT_STRING, 1),
+-} ASN1_SEQUENCE_END(EC_PRIVATEKEY);
+-
+-IMPLEMENT_ASN1_FUNCTIONS_const(EC_PRIVATEKEY);
+-
+-
+-ECPKPARAMETERS *ec_asn1_group2pkparameters(const EC_GROUP *group,
+-                                           ECPKPARAMETERS *params) {
+-  int ok = 0, nid;
+-  ECPKPARAMETERS *ret = params;
+-
+-  if (ret == NULL) {
+-    ret = ECPKPARAMETERS_new();
+-    if (ret == NULL) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-      return NULL;
++  /* Parse the optional parameters field. */
++  EC_GROUP *inner_group = NULL;
++  EC_KEY *ret = NULL;
++  if (CBS_peek_asn1_tag(&ec_private_key, kParametersTag)) {
++    /* Per SEC 1, as an alternative to omitting it, one is allowed to specify
++     * this field and put in a NULL to mean inheriting this value. This was
++     * omitted in a previous version of this logic without problems, so leave it
++     * unimplemented. */
++    CBS child;
++    if (!CBS_get_asn1(&ec_private_key, &child, kParametersTag)) {
++      OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++      goto err;
++    }
++    inner_group = EC_KEY_parse_parameters(&child);
++    if (inner_group == NULL) {
++      goto err;
++    }
++    if (group == NULL) {
++      group = inner_group;
++    } else if (EC_GROUP_cmp(group, inner_group, NULL) != 0) {
++      /* If a group was supplied externally, it must match. */
++      OPENSSL_PUT_ERROR(EC, EC_R_GROUP_MISMATCH);
++      goto err;
++    }
++    if (CBS_len(&child) != 0) {
++      OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++      goto err;
+     }
+-  } else {
+-    ASN1_OBJECT_free(ret->value.named_curve);
+   }
+ 
+-  /* use the ASN.1 OID to describe the the elliptic curve parameters. */
+-  nid = EC_GROUP_get_curve_name(group);
+-  if (nid) {
+-    ret->type = 0;
+-    ret->value.named_curve = (ASN1_OBJECT*) OBJ_nid2obj(nid);
+-    ok = ret->value.named_curve != NULL;
++  if (group == NULL) {
++    OPENSSL_PUT_ERROR(EC, EC_R_MISSING_PARAMETERS);
++    goto err;
+   }
+ 
+-  if (!ok) {
+-    ECPKPARAMETERS_free(ret);
+-    return NULL;
++  ret = EC_KEY_new();
++  if (ret == NULL || !EC_KEY_set_group(ret, group)) {
++    goto err;
+   }
+ 
+-  return ret;
+-}
+-
+-EC_GROUP *ec_asn1_pkparameters2group(const ECPKPARAMETERS *params) {
+-  EC_GROUP *ret = NULL;
+-  int nid = NID_undef;
++  /* Although RFC 5915 specifies the length of the key, OpenSSL historically
++   * got this wrong, so accept any length. See upstream's
++   * 30cd4ff294252c4b6a4b69cbef6a5b4117705d22. */
++  ret->priv_key =
++      BN_bin2bn(CBS_data(&private_key), CBS_len(&private_key), NULL);
++  ret->pub_key = EC_POINT_new(group);
++  if (ret->priv_key == NULL || ret->pub_key == NULL) {
++    goto err;
++  }
+ 
+-  if (params == NULL) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_MISSING_PARAMETERS);
+-    return NULL;
++  if (BN_cmp(ret->priv_key, EC_GROUP_get0_order(group)) >= 0) {
++    OPENSSL_PUT_ERROR(EC, EC_R_WRONG_ORDER);
++    goto err;
+   }
+ 
+-  if (params->type == 0) {
+-    nid = OBJ_obj2nid(params->value.named_curve);
+-  } else if (params->type == 1) {
+-    /* We don't support arbitary curves so we attempt to recognise it from the
+-     * group order. */
+-    const ECPARAMETERS *ecparams = params->value.parameters;
+-    unsigned i;
+-    const struct built_in_curve *curve;
++  if (CBS_peek_asn1_tag(&ec_private_key, kPublicKeyTag)) {
++    CBS child, public_key;
++    uint8_t padding;
++    if (!CBS_get_asn1(&ec_private_key, &child, kPublicKeyTag) ||
++        !CBS_get_asn1(&child, &public_key, CBS_ASN1_BITSTRING) ||
++        /* As in a SubjectPublicKeyInfo, the byte-encoded public key is then
++         * encoded as a BIT STRING with bits ordered as in the DER encoding. */
++        !CBS_get_u8(&public_key, &padding) ||
++        padding != 0 ||
++        /* Explicitly check |public_key| is non-empty to save the conversion
++         * form later. */
++        CBS_len(&public_key) == 0 ||
++        !EC_POINT_oct2point(group, ret->pub_key, CBS_data(&public_key),
++                            CBS_len(&public_key), NULL) ||
++        CBS_len(&child) != 0) {
++      OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++      goto err;
++    }
+ 
+-    for (i = 0; OPENSSL_built_in_curves[i].nid != NID_undef; i++) {
+-      curve = &OPENSSL_built_in_curves[i];
+-      const unsigned param_len = curve->data->param_len;
+-      if ((unsigned) ecparams->order->length == param_len &&
+-          memcmp(ecparams->order->data, &curve->data->data[param_len * 5],
+-                 param_len) == 0) {
+-        nid = curve->nid;
+-        break;
+-      }
++    /* Save the point conversion form.
++     * TODO(davidben): Consider removing this. */
++    ret->conv_form = (point_conversion_form_t)(CBS_data(&public_key)[0] & ~0x01);
++  } else {
++    /* Compute the public key instead. */
++    if (!EC_POINT_mul(group, ret->pub_key, ret->priv_key, NULL, NULL, NULL)) {
++      goto err;
+     }
++    /* Remember the original private-key-only encoding.
++     * TODO(davidben): Consider removing this. */
++    ret->enc_flag |= EC_PKEY_NO_PUBKEY;
+   }
+ 
+-  if (nid == NID_undef) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_NON_NAMED_CURVE);
+-    return NULL;
++  if (CBS_len(&ec_private_key) != 0) {
++    OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++    goto err;
+   }
+ 
+-  ret = EC_GROUP_new_by_curve_name(nid);
+-  if (ret == NULL) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_EC_GROUP_NEW_BY_NAME_FAILURE);
+-    return NULL;
++  /* Ensure the resulting key is valid. */
++  if (!EC_KEY_check_key(ret)) {
++    goto err;
+   }
+ 
++  EC_GROUP_free(inner_group);
+   return ret;
++
++err:
++  EC_KEY_free(ret);
++  EC_GROUP_free(inner_group);
++  return NULL;
+ }
+ 
+-static EC_GROUP *d2i_ECPKParameters(EC_GROUP **groupp, const uint8_t **inp,
+-                                    long len) {
+-  EC_GROUP *group = NULL;
+-  ECPKPARAMETERS *params = NULL;
+-  const uint8_t *in = *inp;
++int EC_KEY_marshal_private_key(CBB *cbb, const EC_KEY *key,
++                               unsigned enc_flags) {
++  if (key == NULL || key->group == NULL || key->priv_key == NULL) {
++    OPENSSL_PUT_ERROR(EC, ERR_R_PASSED_NULL_PARAMETER);
++    return 0;
++  }
+ 
+-  params = d2i_ECPKPARAMETERS(NULL, &in, len);
+-  if (params == NULL) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_D2I_ECPKPARAMETERS_FAILURE);
+-    ECPKPARAMETERS_free(params);
+-    return NULL;
++  CBB ec_private_key, private_key;
++  if (!CBB_add_asn1(cbb, &ec_private_key, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1_uint64(&ec_private_key, 1 /* version */) ||
++      !CBB_add_asn1(&ec_private_key, &private_key, CBS_ASN1_OCTETSTRING) ||
++      !BN_bn2cbb_padded(&private_key,
++                        BN_num_bytes(EC_GROUP_get0_order(key->group)),
++                        key->priv_key)) {
++    OPENSSL_PUT_ERROR(EC, EC_R_ENCODE_ERROR);
++    return 0;
+   }
+ 
+-  group = ec_asn1_pkparameters2group(params);
+-  if (group == NULL) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_PKPARAMETERS2GROUP_FAILURE);
+-    ECPKPARAMETERS_free(params);
+-    return NULL;
++  if (!(enc_flags & EC_PKEY_NO_PARAMETERS)) {
++    int curve_nid = EC_GROUP_get_curve_name(key->group);
++    if (curve_nid == NID_undef) {
++      OPENSSL_PUT_ERROR(EC, EC_R_UNKNOWN_GROUP);
++      return 0;
++    }
++    CBB child;
++    if (!CBB_add_asn1(&ec_private_key, &child, kParametersTag) ||
++        !OBJ_nid2cbb(&child, curve_nid) ||
++        !CBB_flush(&ec_private_key)) {
++      OPENSSL_PUT_ERROR(EC, EC_R_ENCODE_ERROR);
++      return 0;
++    }
+   }
+ 
+-  if (groupp) {
+-    EC_GROUP_free(*groupp);
+-    *groupp = group;
++  /* TODO(fork): replace this flexibility with sensible default? */
++  if (!(enc_flags & EC_PKEY_NO_PUBKEY) && key->pub_key != NULL) {
++    CBB child, public_key;
++    if (!CBB_add_asn1(&ec_private_key, &child, kPublicKeyTag) ||
++        !CBB_add_asn1(&child, &public_key, CBS_ASN1_BITSTRING) ||
++        /* As in a SubjectPublicKeyInfo, the byte-encoded public key is then
++         * encoded as a BIT STRING with bits ordered as in the DER encoding. */
++        !CBB_add_u8(&public_key, 0 /* padding */) ||
++        !EC_POINT_point2cbb(&public_key, key->group, key->pub_key,
++                            key->conv_form, NULL) ||
++        !CBB_flush(&ec_private_key)) {
++      OPENSSL_PUT_ERROR(EC, EC_R_ENCODE_ERROR);
++      return 0;
++    }
++  }
++
++  if (!CBB_flush(cbb)) {
++    OPENSSL_PUT_ERROR(EC, EC_R_ENCODE_ERROR);
++    return 0;
+   }
+ 
+-  ECPKPARAMETERS_free(params);
+-  *inp = in;
+-  return group;
++  return 1;
+ }
+ 
+-static int i2d_ECPKParameters(const EC_GROUP *group, uint8_t **outp) {
+-  int ret = 0;
+-  ECPKPARAMETERS *tmp = ec_asn1_group2pkparameters(group, NULL);
+-  if (tmp == NULL) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_GROUP2PKPARAMETERS_FAILURE);
++/* is_unsigned_integer returns one if |cbs| is a valid unsigned DER INTEGER and
++ * zero otherwise. */
++static int is_unsigned_integer(const CBS *cbs) {
++  if (CBS_len(cbs) == 0) {
+     return 0;
+   }
+-  ret = i2d_ECPKPARAMETERS(tmp, outp);
+-  if (ret == 0) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_I2D_ECPKPARAMETERS_FAILURE);
+-    ECPKPARAMETERS_free(tmp);
++  uint8_t byte = CBS_data(cbs)[0];
++  if ((byte & 0x80) ||
++      (byte == 0 && CBS_len(cbs) > 1 && (CBS_data(cbs)[1] & 0x80) == 0)) {
++    /* Negative or not minimally-encoded. */
+     return 0;
+   }
+-  ECPKPARAMETERS_free(tmp);
+-  return ret;
++  return 1;
+ }
+ 
+-EC_KEY *d2i_ECPrivateKey(EC_KEY **a, const uint8_t **inp, long len) {
+-  int ok = 0;
+-  EC_KEY *ret = NULL;
+-  EC_PRIVATEKEY *priv_key = NULL;
+-
+-  const uint8_t *in = *inp;
+-  priv_key = d2i_EC_PRIVATEKEY(NULL, &in, len);
+-  if (priv_key == NULL) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-    return NULL;
++static int parse_explicit_prime_curve(CBS *in, CBS *out_prime, CBS *out_a,
++                                      CBS *out_b, CBS *out_base_x,
++                                      CBS *out_base_y, CBS *out_order) {
++  /* See RFC 3279, section 2.3.5. Note that RFC 3279 calls this structure an
++   * ECParameters while RFC 5480 calls it a SpecifiedECDomain. */
++  CBS params, field_id, field_type, curve, base;
++  uint64_t version;
++  if (!CBS_get_asn1(in, &params, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1_uint64(&params, &version) ||
++      version != 1 ||
++      !CBS_get_asn1(&params, &field_id, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1(&field_id, &field_type, CBS_ASN1_OBJECT) ||
++      OBJ_cbs2nid(&field_type) != NID_X9_62_prime_field ||
++      !CBS_get_asn1(&field_id, out_prime, CBS_ASN1_INTEGER) ||
++      !is_unsigned_integer(out_prime) ||
++      CBS_len(&field_id) != 0 ||
++      !CBS_get_asn1(&params, &curve, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1(&curve, out_a, CBS_ASN1_OCTETSTRING) ||
++      !CBS_get_asn1(&curve, out_b, CBS_ASN1_OCTETSTRING) ||
++      /* |curve| has an optional BIT STRING seed which we ignore. */
++      !CBS_get_asn1(&params, &base, CBS_ASN1_OCTETSTRING) ||
++      !CBS_get_asn1(&params, out_order, CBS_ASN1_INTEGER) ||
++      !is_unsigned_integer(out_order)) {
++    OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++    return 0;
+   }
+ 
+-  if (a == NULL || *a == NULL) {
+-    ret = EC_KEY_new();
+-    if (ret == NULL) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-      goto err;
+-    }
+-  } else {
+-    ret = *a;
+-  }
++  /* |params| has an optional cofactor which we ignore. With the optional seed
++   * in |curve|, a group already has arbitrarily many encodings. Parse enough to
++   * uniquely determine the curve. */
+ 
+-  if (priv_key->parameters) {
+-    EC_GROUP_free(ret->group);
+-    ret->group = ec_asn1_pkparameters2group(priv_key->parameters);
++  /* Require that the base point use uncompressed form. */
++  uint8_t form;
++  if (!CBS_get_u8(&base, &form) || form != POINT_CONVERSION_UNCOMPRESSED) {
++    OPENSSL_PUT_ERROR(EC, EC_R_INVALID_FORM);
++    return 0;
+   }
+ 
+-  if (ret->group == NULL) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-    goto err;
++  if (CBS_len(&base) % 2 != 0) {
++    OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++    return 0;
+   }
++  size_t field_len = CBS_len(&base) / 2;
++  CBS_init(out_base_x, CBS_data(&base), field_len);
++  CBS_init(out_base_y, CBS_data(&base) + field_len, field_len);
+ 
+-  ret->version = priv_key->version;
+-
+-  if (priv_key->privateKey) {
+-    ret->priv_key =
+-        BN_bin2bn(M_ASN1_STRING_data(priv_key->privateKey),
+-                  M_ASN1_STRING_length(priv_key->privateKey), ret->priv_key);
+-    if (ret->priv_key == NULL) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_BN_LIB);
+-      goto err;
+-    }
+-  } else {
+-    OPENSSL_PUT_ERROR(EC, EC_R_MISSING_PRIVATE_KEY);
+-    goto err;
+-  }
++  return 1;
++}
+ 
+-  if (BN_cmp(ret->priv_key, EC_GROUP_get0_order(ret->group)) >= 0) {
+-    OPENSSL_PUT_ERROR(EC, EC_R_WRONG_ORDER);
+-    goto err;
++/* integers_equal returns one if |a| and |b| are equal, up to leading zeros, and
++ * zero otherwise. */
++static int integers_equal(const CBS *a, const uint8_t *b, size_t b_len) {
++  /* Remove leading zeros from |a| and |b|. */
++  CBS a_copy = *a;
++  while (CBS_len(&a_copy) > 0 && CBS_data(&a_copy)[0] == 0) {
++    CBS_skip(&a_copy, 1);
+   }
+-
+-  EC_POINT_free(ret->pub_key);
+-  ret->pub_key = EC_POINT_new(ret->group);
+-  if (ret->pub_key == NULL) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-    goto err;
++  while (b_len > 0 && b[0] == 0) {
++    b++;
++    b_len--;
+   }
++  return CBS_mem_equal(&a_copy, b, b_len);
++}
+ 
+-  if (priv_key->publicKey) {
+-    const uint8_t *pub_oct;
+-    int pub_oct_len;
+-
+-    pub_oct = M_ASN1_STRING_data(priv_key->publicKey);
+-    pub_oct_len = M_ASN1_STRING_length(priv_key->publicKey);
+-    /* The first byte (the point conversion form) must be present. */
+-    if (pub_oct_len <= 0) {
+-      OPENSSL_PUT_ERROR(EC, EC_R_BUFFER_TOO_SMALL);
+-      goto err;
+-    }
+-    /* Save the point conversion form. */
+-    ret->conv_form = (point_conversion_form_t)(pub_oct[0] & ~0x01);
+-    if (!EC_POINT_oct2point(ret->group, ret->pub_key, pub_oct, pub_oct_len,
+-                            NULL)) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-      goto err;
++EC_GROUP *EC_KEY_parse_parameters(CBS *cbs) {
++  if (CBS_peek_asn1_tag(cbs, CBS_ASN1_SEQUENCE)) {
++    /* OpenSSL sometimes produces ECPrivateKeys with explicitly-encoded versions
++     * of named curves.
++     *
++     * TODO(davidben): Remove support for this. */
++    CBS prime, a, b, base_x, base_y, order;
++    if (!parse_explicit_prime_curve(cbs, &prime, &a, &b, &base_x, &base_y,
++                                    &order)) {
++      return NULL;
+     }
+-  } else {
+-    if (!EC_POINT_mul(ret->group, ret->pub_key, ret->priv_key, NULL, NULL,
+-                      NULL)) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-      goto err;
++
++    /* Look for a matching prime curve. */
++    unsigned i;
++    for (i = 0; OPENSSL_built_in_curves[i].nid != NID_undef; i++) {
++      const struct built_in_curve *curve = &OPENSSL_built_in_curves[i];
++      const unsigned param_len = curve->data->param_len;
++      /* |curve->data->data| is ordered p, a, b, x, y, order, each component
++       * zero-padded up to the field length. Although SEC 1 states that the
++       * Field-Element-to-Octet-String conversion also pads, OpenSSL mis-encodes
++       * |a| and |b|, so this comparison must allow omitting leading zeros.
++       * (This is relevant for P-521 whose |b| has a leading 0.) */
++      if (integers_equal(&prime, curve->data->data, param_len) &&
++          integers_equal(&a, curve->data->data + param_len, param_len) &&
++          integers_equal(&b, curve->data->data + param_len * 2, param_len) &&
++          integers_equal(&base_x, curve->data->data + param_len * 3,
++                         param_len) &&
++          integers_equal(&base_y, curve->data->data + param_len * 4,
++                         param_len) &&
++          integers_equal(&order, curve->data->data + param_len * 5,
++                         param_len)) {
++        return EC_GROUP_new_by_curve_name(curve->nid);
++      }
+     }
+-    /* Remember the original private-key-only encoding. */
+-    ret->enc_flag |= EC_PKEY_NO_PUBKEY;
+-  }
+ 
+-  if (a) {
+-    *a = ret;
++    OPENSSL_PUT_ERROR(EC, EC_R_UNKNOWN_GROUP);
++    return NULL;
+   }
+-  *inp = in;
+-  ok = 1;
+ 
+-err:
+-  if (!ok) {
+-    if (a == NULL || *a != ret) {
+-      EC_KEY_free(ret);
+-    }
+-    ret = NULL;
++  CBS named_curve;
++  if (!CBS_get_asn1(cbs, &named_curve, CBS_ASN1_OBJECT)) {
++    OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++    return NULL;
+   }
+-
+-  EC_PRIVATEKEY_free(priv_key);
+-
+-  return ret;
++  return EC_GROUP_new_by_curve_name(OBJ_cbs2nid(&named_curve));
+ }
+ 
+-int i2d_ECPrivateKey(const EC_KEY *key, uint8_t **outp) {
+-  int ret = 0, ok = 0;
+-  uint8_t *buffer = NULL;
+-  size_t buf_len = 0, tmp_len;
+-  EC_PRIVATEKEY *priv_key = NULL;
+-
+-  if (key == NULL || key->group == NULL || key->priv_key == NULL) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_PASSED_NULL_PARAMETER);
+-    goto err;
++EC_KEY *d2i_ECPrivateKey(EC_KEY **out, const uint8_t **inp, long len) {
++  /* This function treats its |out| parameter differently from other |d2i|
++   * functions. If supplied, take the group from |*out|. */
++  const EC_GROUP *group = NULL;
++  if (out != NULL && *out != NULL) {
++    group = EC_KEY_get0_group(*out);
+   }
+ 
+-  priv_key = EC_PRIVATEKEY_new();
+-  if (priv_key == NULL) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-    goto err;
++  if (len < 0) {
++    OPENSSL_PUT_ERROR(EC, EC_R_DECODE_ERROR);
++    return NULL;
+   }
+-
+-  priv_key->version = key->version;
+-
+-  buf_len = BN_num_bytes(&key->group->order);
+-  buffer = OPENSSL_malloc(buf_len);
+-  if (buffer == NULL) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-    goto err;
++  CBS cbs;
++  CBS_init(&cbs, *inp, (size_t)len);
++  EC_KEY *ret = EC_KEY_parse_private_key(&cbs, group);
++  if (ret == NULL) {
++    return NULL;
+   }
+-
+-  if (!BN_bn2bin_padded(buffer, buf_len, key->priv_key)) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_BN_LIB);
+-    goto err;
++  if (out != NULL) {
++    EC_KEY_free(*out);
++    *out = ret;
+   }
++  *inp = CBS_data(&cbs);
++  return ret;
++}
+ 
+-  if (!M_ASN1_OCTET_STRING_set(priv_key->privateKey, buffer, buf_len)) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_ASN1_LIB);
+-    goto err;
++int i2d_ECPrivateKey(const EC_KEY *key, uint8_t **outp) {
++  CBB cbb;
++  if (!CBB_init(&cbb, 0) ||
++      !EC_KEY_marshal_private_key(&cbb, key, EC_KEY_get_enc_flags(key))) {
++    return -1;
+   }
++  return CBB_finish_i2d(&cbb, outp);
++}
+ 
+-  /* TODO(fork): replace this flexibility with key sensible default? */
+-  if (!(key->enc_flag & EC_PKEY_NO_PARAMETERS)) {
+-    if ((priv_key->parameters = ec_asn1_group2pkparameters(
+-             key->group, priv_key->parameters)) == NULL) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-      goto err;
+-    }
++EC_KEY *d2i_ECParameters(EC_KEY **out_key, const uint8_t **inp, long len) {
++  if (len < 0) {
++    return NULL;
+   }
+ 
+-  /* TODO(fork): replace this flexibility with key sensible default? */
+-  if (!(key->enc_flag & EC_PKEY_NO_PUBKEY) && key->pub_key != NULL) {
+-    priv_key->publicKey = M_ASN1_BIT_STRING_new();
+-    if (priv_key->publicKey == NULL) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-      goto err;
+-    }
+-
+-    tmp_len = EC_POINT_point2oct(key->group, key->pub_key, key->conv_form, NULL,
+-                                 0, NULL);
+-
+-    if (tmp_len > buf_len) {
+-      uint8_t *tmp_buffer = OPENSSL_realloc(buffer, tmp_len);
+-      if (!tmp_buffer) {
+-        OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-        goto err;
+-      }
+-      buffer = tmp_buffer;
+-      buf_len = tmp_len;
+-    }
+-
+-    if (!EC_POINT_point2oct(key->group, key->pub_key, key->conv_form, buffer,
+-                            buf_len, NULL)) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-      goto err;
+-    }
+-
+-    priv_key->publicKey->flags &= ~(ASN1_STRING_FLAG_BITS_LEFT | 0x07);
+-    priv_key->publicKey->flags |= ASN1_STRING_FLAG_BITS_LEFT;
+-    if (!M_ASN1_BIT_STRING_set(priv_key->publicKey, buffer, buf_len)) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_ASN1_LIB);
+-      goto err;
+-    }
++  CBS cbs;
++  CBS_init(&cbs, *inp, (size_t)len);
++  EC_GROUP *group = EC_KEY_parse_parameters(&cbs);
++  if (group == NULL) {
++    return NULL;
+   }
+ 
+-  ret = i2d_EC_PRIVATEKEY(priv_key, outp);
+-  if (ret == 0) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-    goto err;
++  EC_KEY *ret = EC_KEY_new();
++  if (ret == NULL || !EC_KEY_set_group(ret, group)) {
++    EC_GROUP_free(group);
++    EC_KEY_free(ret);
++    return NULL;
+   }
+-  ok = 1;
++  EC_GROUP_free(group);
+ 
+-err:
+-  OPENSSL_free(buffer);
+-  EC_PRIVATEKEY_free(priv_key);
+-  return (ok ? ret : 0);
+-}
+-
+-int i2d_ECParameters(const EC_KEY *key, uint8_t **outp) {
+-  if (key == NULL) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_PASSED_NULL_PARAMETER);
+-    return 0;
++  if (out_key != NULL) {
++    EC_KEY_free(*out_key);
++    *out_key = ret;
+   }
+-  return i2d_ECPKParameters(key->group, outp);
++  *inp = CBS_data(&cbs);
++  return ret;
+ }
+ 
+-EC_KEY *d2i_ECParameters(EC_KEY **key, const uint8_t **inp, long len) {
+-  EC_KEY *ret;
+-
+-  if (inp == NULL || *inp == NULL) {
++int i2d_ECParameters(const EC_KEY *key, uint8_t **outp) {
++  if (key == NULL || key->group == NULL) {
+     OPENSSL_PUT_ERROR(EC, ERR_R_PASSED_NULL_PARAMETER);
+-    return NULL;
+-  }
+-
+-  if (key == NULL || *key == NULL) {
+-    ret = EC_KEY_new();
+-    if (ret == NULL) {
+-      OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-      return NULL;
+-    }
+-  } else {
+-    ret = *key;
++    return -1;
+   }
+ 
+-  if (!d2i_ECPKParameters(&ret->group, inp, len)) {
+-    OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-    if (key == NULL || *key == NULL) {
+-      EC_KEY_free(ret);
+-    }
+-    return NULL;
++  int curve_nid = EC_GROUP_get_curve_name(key->group);
++  if (curve_nid == NID_undef) {
++    OPENSSL_PUT_ERROR(EC, EC_R_UNKNOWN_GROUP);
++    return -1;
+   }
+ 
+-  if (key) {
+-    *key = ret;
++  CBB cbb;
++  if (!CBB_init(&cbb, 0) ||
++      !OBJ_nid2cbb(&cbb, curve_nid)) {
++    return -1;
+   }
+-  return ret;
++  return CBB_finish_i2d(&cbb, outp);
+ }
+ 
+ EC_KEY *o2i_ECPublicKey(EC_KEY **keyp, const uint8_t **inp, long len) {
+@@ -526,17 +459,17 @@ EC_KEY *o2i_ECPublicKey(EC_KEY **keyp, const uint8_t **inp, long len) {
+ 
+   if (keyp == NULL || *keyp == NULL || (*keyp)->group == NULL) {
+     OPENSSL_PUT_ERROR(EC, ERR_R_PASSED_NULL_PARAMETER);
+-    return 0;
++    return NULL;
+   }
+   ret = *keyp;
+   if (ret->pub_key == NULL &&
+       (ret->pub_key = EC_POINT_new(ret->group)) == NULL) {
+     OPENSSL_PUT_ERROR(EC, ERR_R_MALLOC_FAILURE);
+-    return 0;
++    return NULL;
+   }
+   if (!EC_POINT_oct2point(ret->group, ret->pub_key, *inp, len, NULL)) {
+     OPENSSL_PUT_ERROR(EC, ERR_R_EC_LIB);
+-    return 0;
++    return NULL;
+   }
+   /* save the point conversion form */
+   ret->conv_form = (point_conversion_form_t)(*inp[0] & ~0x01);
+diff --git a/crypto/ec/ec_key.c b/crypto/ec/ec_key.c
+index 5b015f50b..f01bf6b4d 100644
+--- a/crypto/ec/ec_key.c
++++ b/crypto/ec/ec_key.c
+@@ -100,7 +100,6 @@ EC_KEY *EC_KEY_new_method(const ENGINE *engine) {
+     METHOD_ref(ret->ecdsa_meth);
+   }
+ 
+-  ret->version = 1;
+   ret->conv_form = POINT_CONVERSION_UNCOMPRESSED;
+   ret->references = 1;
+ 
+@@ -209,8 +208,6 @@ EC_KEY *EC_KEY_copy(EC_KEY *dest, const EC_KEY *src) {
+   /* copy the rest */
+   dest->enc_flag = src->enc_flag;
+   dest->conv_form = src->conv_form;
+-  dest->version = src->version;
+-  dest->flags = src->flags;
+ 
+   return dest;
+ }
+diff --git a/crypto/ec/ec_test.cc b/crypto/ec/ec_test.cc
+index c5bd3218b..d45e193a3 100644
+--- a/crypto/ec/ec_test.cc
++++ b/crypto/ec/ec_test.cc
+@@ -17,6 +17,7 @@
+ 
+ #include <vector>
+ 
++#include <openssl/bytestring.h>
+ #include <openssl/crypto.h>
+ #include <openssl/ec_key.h>
+ #include <openssl/err.h>
+@@ -34,6 +35,36 @@ static const uint8_t kECKeyWithoutPublic[] = {
+   0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+ };
+ 
++// kECKeySpecifiedCurve is the above key with P-256's parameters explicitly
++// spelled out rather than using a named curve.
++static const uint8_t kECKeySpecifiedCurve[] = {
++    0x30, 0x82, 0x01, 0x22, 0x02, 0x01, 0x01, 0x04, 0x20, 0xc6, 0xc1, 0xaa,
++    0xda, 0x15, 0xb0, 0x76, 0x61, 0xf8, 0x14, 0x2c, 0x6c, 0xaf, 0x0f, 0xdb,
++    0x24, 0x1a, 0xff, 0x2e, 0xfe, 0x46, 0xc0, 0x93, 0x8b, 0x74, 0xf2, 0xbc,
++    0xc5, 0x30, 0x52, 0xb0, 0x77, 0xa0, 0x81, 0xfa, 0x30, 0x81, 0xf7, 0x02,
++    0x01, 0x01, 0x30, 0x2c, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x01,
++    0x01, 0x02, 0x21, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++    0x30, 0x5b, 0x04, 0x20, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc,
++    0x04, 0x20, 0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7, 0xb3, 0xeb,
++    0xbd, 0x55, 0x76, 0x98, 0x86, 0xbc, 0x65, 0x1d, 0x06, 0xb0, 0xcc, 0x53,
++    0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e, 0x27, 0xd2, 0x60, 0x4b, 0x03, 0x15,
++    0x00, 0xc4, 0x9d, 0x36, 0x08, 0x86, 0xe7, 0x04, 0x93, 0x6a, 0x66, 0x78,
++    0xe1, 0x13, 0x9d, 0x26, 0xb7, 0x81, 0x9f, 0x7e, 0x90, 0x04, 0x41, 0x04,
++    0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5,
++    0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0,
++    0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2,
++    0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16,
++    0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68,
++    0x37, 0xbf, 0x51, 0xf5, 0x02, 0x21, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00,
++    0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbc,
++    0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc,
++    0x63, 0x25, 0x51, 0x02, 0x01, 0x01,
++};
++
+ // kECKeyMissingZeros is an ECPrivateKey containing a degenerate P-256 key where
+ // the private key is one. The private key is incorrectly encoded without zero
+ // padding.
+@@ -66,9 +97,10 @@ static const uint8_t kECKeyWithZeros[] = {
+ // DecodeECPrivateKey decodes |in| as an ECPrivateKey structure and returns the
+ // result or nullptr on error.
+ static ScopedEC_KEY DecodeECPrivateKey(const uint8_t *in, size_t in_len) {
+-  const uint8_t *inp = in;
+-  ScopedEC_KEY ret(d2i_ECPrivateKey(NULL, &inp, in_len));
+-  if (!ret || inp != in + in_len) {
++  CBS cbs;
++  CBS_init(&cbs, in, in_len);
++  ScopedEC_KEY ret(EC_KEY_parse_private_key(&cbs, NULL));
++  if (!ret || CBS_len(&cbs) != 0) {
+     return nullptr;
+   }
+   return ret;
+@@ -76,11 +108,18 @@ static ScopedEC_KEY DecodeECPrivateKey(const uint8_t *in, size_t in_len) {
+ 
+ // EncodeECPrivateKey encodes |key| as an ECPrivateKey structure into |*out|. It
+ // returns true on success or false on error.
+-static bool EncodeECPrivateKey(std::vector<uint8_t> *out, EC_KEY *key) {
+-  int len = i2d_ECPrivateKey(key, NULL);
+-  out->resize(len);
+-  uint8_t *outp = out->data();
+-  return i2d_ECPrivateKey(key, &outp) == len;
++static bool EncodeECPrivateKey(std::vector<uint8_t> *out, const EC_KEY *key) {
++  ScopedCBB cbb;
++  uint8_t *der;
++  size_t der_len;
++  if (!CBB_init(cbb.get(), 0) ||
++      !EC_KEY_marshal_private_key(cbb.get(), key, EC_KEY_get_enc_flags(key)) ||
++      !CBB_finish(cbb.get(), &der, &der_len)) {
++    return false;
++  }
++  out->assign(der, der + der_len);
++  OPENSSL_free(der);
++  return true;
+ }
+ 
+ bool Testd2i_ECPrivateKey() {
+@@ -172,7 +211,39 @@ static bool TestZeroPadding() {
+   return true;
+ }
+ 
+-bool TestSetAffine(const int nid) {
++static bool TestSpecifiedCurve() {
++  // Test keys with specified curves may be decoded.
++  ScopedEC_KEY key =
++      DecodeECPrivateKey(kECKeySpecifiedCurve, sizeof(kECKeySpecifiedCurve));
++  if (!key) {
++    ERR_print_errors_fp(stderr);
++    return false;
++  }
++
++  // The group should have been interpreted as P-256.
++  if (EC_GROUP_get_curve_name(EC_KEY_get0_group(key.get())) !=
++      NID_X9_62_prime256v1) {
++    fprintf(stderr, "Curve name incorrect.\n");
++    return false;
++  }
++
++  // Encoding the key should still use named form.
++  std::vector<uint8_t> out;
++  if (!EncodeECPrivateKey(&out, key.get())) {
++    ERR_print_errors_fp(stderr);
++    return false;
++  }
++  if (std::vector<uint8_t>(kECKeyWithoutPublic,
++                           kECKeyWithoutPublic + sizeof(kECKeyWithoutPublic)) !=
++      out) {
++    fprintf(stderr, "Serialisation of key was incorrect.\n");
++    return false;
++  }
++
++  return true;
++}
++
++static bool TestSetAffine(const int nid) {
+   ScopedEC_KEY key(EC_KEY_new_by_curve_name(nid));
+   if (!key) {
+     return false;
+@@ -331,6 +402,7 @@ int main(void) {
+ 
+   if (!Testd2i_ECPrivateKey() ||
+       !TestZeroPadding() ||
++      !TestSpecifiedCurve() ||
+       !TestSetAffine(NID_secp224r1) ||
+       !TestSetAffine(NID_X9_62_prime256v1) ||
+       !TestSetAffine(NID_secp384r1) ||
+diff --git a/crypto/ec/internal.h b/crypto/ec/internal.h
+index 55d2afa5f..2b788c1ca 100644
+--- a/crypto/ec/internal.h
++++ b/crypto/ec/internal.h
+@@ -253,8 +253,6 @@ const EC_METHOD *EC_GFp_nistp256_method(void);
+ const EC_METHOD *EC_GFp_nistz256_method(void);
+ 
+ struct ec_key_st {
+-  int version;
+-
+   EC_GROUP *group;
+ 
+   EC_POINT *pub_key;
+@@ -264,7 +262,6 @@ struct ec_key_st {
+   point_conversion_form_t conv_form;
+ 
+   CRYPTO_refcount_t references;
+-  int flags;
+ 
+   ECDSA_METHOD *ecdsa_meth;
+ 
 diff --git a/crypto/ecdsa/ecdsa_asn1.c b/crypto/ecdsa/ecdsa_asn1.c
 index 61f5d623f..3a47257a5 100644
 --- a/crypto/ecdsa/ecdsa_asn1.c
@@ -571,11 +2150,1755 @@ index 61f5d623f..3a47257a5 100644
 -  return (int)der_len;
 +  return CBB_finish_i2d(&cbb, outp);
  }
+diff --git a/crypto/err/dsa.errordata b/crypto/err/dsa.errordata
+index 3c5764a1f..6f4bc138a 100644
+--- a/crypto/err/dsa.errordata
++++ b/crypto/err/dsa.errordata
+@@ -1,4 +1,7 @@
+ DSA,100,BAD_Q_VALUE
++DSA,104,BAD_VERSION
++DSA,105,DECODE_ERROR
++DSA,106,ENCODE_ERROR
+ DSA,101,MISSING_PARAMETERS
+ DSA,102,MODULUS_TOO_LARGE
+ DSA,103,NEED_NEW_SETUP_VALUES
+diff --git a/crypto/err/ec.errordata b/crypto/err/ec.errordata
+index e7b417569..d074afc96 100644
+--- a/crypto/err/ec.errordata
++++ b/crypto/err/ec.errordata
+@@ -2,8 +2,11 @@ EC,126,BIGNUM_OUT_OF_RANGE
+ EC,100,BUFFER_TOO_SMALL
+ EC,101,COORDINATES_OUT_OF_RANGE
+ EC,102,D2I_ECPKPARAMETERS_FAILURE
++EC,128,DECODE_ERROR
+ EC,103,EC_GROUP_NEW_BY_NAME_FAILURE
++EC,129,ENCODE_ERROR
+ EC,104,GROUP2PKPARAMETERS_FAILURE
++EC,130,GROUP_MISMATCH
+ EC,105,I2D_ECPKPARAMETERS_FAILURE
+ EC,106,INCOMPATIBLE_OBJECTS
+ EC,107,INVALID_COMPRESSED_POINT
+diff --git a/crypto/err/evp.errordata b/crypto/err/evp.errordata
+index 8f8dd4838..cfb81b159 100644
+--- a/crypto/err/evp.errordata
++++ b/crypto/err/evp.errordata
+@@ -6,6 +6,7 @@ EVP,143,DECODE_ERROR
+ EVP,104,DIFFERENT_KEY_TYPES
+ EVP,105,DIFFERENT_PARAMETERS
+ EVP,147,DIGEST_AND_KEY_TYPE_NOT_SUPPORTED
++EVP,155,ENCODE_ERROR
+ EVP,107,EXPECTING_AN_EC_KEY_KEY
+ EVP,141,EXPECTING_AN_RSA_KEY
+ EVP,109,EXPECTING_A_DH_KEY
+diff --git a/crypto/evp/evp_asn1.c b/crypto/evp/evp_asn1.c
+index da25b99ad..ed7ae8b75 100644
+--- a/crypto/evp/evp_asn1.c
++++ b/crypto/evp/evp_asn1.c
+@@ -57,6 +57,7 @@
+ #include <openssl/evp.h>
+ 
+ #include <openssl/asn1.h>
++#include <openssl/bytestring.h>
+ #include <openssl/err.h>
+ #include <openssl/obj.h>
+ #include <openssl/x509.h>
+@@ -64,6 +65,103 @@
+ #include "internal.h"
+ 
+ 
++EVP_PKEY *EVP_parse_public_key(CBS *cbs) {
++  /* Parse the SubjectPublicKeyInfo. */
++  CBS spki, algorithm, oid, key;
++  uint8_t padding;
++  if (!CBS_get_asn1(cbs, &spki, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1(&spki, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1(&algorithm, &oid, CBS_ASN1_OBJECT) ||
++      !CBS_get_asn1(&spki, &key, CBS_ASN1_BITSTRING) ||
++      CBS_len(&spki) != 0 ||
++      /* Every key type defined encodes the key as a byte string with the same
++       * conversion to BIT STRING. */
++      !CBS_get_u8(&key, &padding) ||
++      padding != 0) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++    return NULL;
++  }
++
++  /* Set up an |EVP_PKEY| of the appropriate type. */
++  EVP_PKEY *ret = EVP_PKEY_new();
++  if (ret == NULL ||
++      !EVP_PKEY_set_type(ret, OBJ_cbs2nid(&oid))) {
++    goto err;
++  }
++
++  /* Call into the type-specific SPKI decoding function. */
++  if (ret->ameth->pub_decode == NULL) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_UNSUPPORTED_ALGORITHM);
++    goto err;
++  }
++  if (!ret->ameth->pub_decode(ret, &algorithm, &key)) {
++    goto err;
++  }
++
++  return ret;
++
++err:
++  EVP_PKEY_free(ret);
++  return NULL;
++}
++
++int EVP_marshal_public_key(CBB *cbb, const EVP_PKEY *key) {
++  if (key->ameth->pub_encode == NULL) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_UNSUPPORTED_ALGORITHM);
++    return 0;
++  }
++
++  return key->ameth->pub_encode(cbb, key);
++}
++
++EVP_PKEY *EVP_parse_private_key(CBS *cbs) {
++  /* Parse the PrivateKeyInfo. */
++  CBS pkcs8, algorithm, oid, key;
++  uint64_t version;
++  if (!CBS_get_asn1(cbs, &pkcs8, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1_uint64(&pkcs8, &version) ||
++      version != 0 ||
++      !CBS_get_asn1(&pkcs8, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !CBS_get_asn1(&algorithm, &oid, CBS_ASN1_OBJECT) ||
++      !CBS_get_asn1(&pkcs8, &key, CBS_ASN1_OCTETSTRING)) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++    return NULL;
++  }
++
++  /* A PrivateKeyInfo ends with a SET of Attributes which we ignore. */
++
++  /* Set up an |EVP_PKEY| of the appropriate type. */
++  EVP_PKEY *ret = EVP_PKEY_new();
++  if (ret == NULL ||
++      !EVP_PKEY_set_type(ret, OBJ_cbs2nid(&oid))) {
++    goto err;
++  }
++
++  /* Call into the type-specific PrivateKeyInfo decoding function. */
++  if (ret->ameth->priv_decode == NULL) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_UNSUPPORTED_ALGORITHM);
++    goto err;
++  }
++  if (!ret->ameth->priv_decode(ret, &algorithm, &key)) {
++    goto err;
++  }
++
++  return ret;
++
++err:
++  EVP_PKEY_free(ret);
++  return NULL;
++}
++
++int EVP_marshal_private_key(CBB *cbb, const EVP_PKEY *key) {
++  if (key->ameth->priv_encode == NULL) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_UNSUPPORTED_ALGORITHM);
++    return 0;
++  }
++
++  return key->ameth->priv_encode(cbb, key);
++}
++
+ EVP_PKEY *d2i_PrivateKey(int type, EVP_PKEY **out, const uint8_t **inp,
+                          long len) {
+   EVP_PKEY *ret;
+diff --git a/crypto/evp/evp_extra_test.cc b/crypto/evp/evp_extra_test.cc
+index 00858f788..19e4cf6a2 100644
+--- a/crypto/evp/evp_extra_test.cc
++++ b/crypto/evp/evp_extra_test.cc
+@@ -388,6 +388,61 @@ static const uint8_t kExampleECKeyDER[] = {
+     0xc1,
+ };
+ 
++// kExampleECKeyPKCS8 is a sample EC private key encoded as a PKCS#8
++// PrivateKeyInfo.
++static const uint8_t kExampleECKeyPKCS8[] = {
++    0x30, 0x81, 0x87, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
++    0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d,
++    0x03, 0x01, 0x07, 0x04, 0x6d, 0x30, 0x6b, 0x02, 0x01, 0x01, 0x04, 0x20,
++    0x43, 0x09, 0xc0, 0x67, 0x75, 0x21, 0x47, 0x9d, 0xa8, 0xfa, 0x16, 0xdf,
++    0x15, 0x73, 0x61, 0x34, 0x68, 0x6f, 0xe3, 0x8e, 0x47, 0x91, 0x95, 0xab,
++    0x79, 0x4a, 0x72, 0x14, 0xcb, 0xe2, 0x49, 0x4f, 0xa1, 0x44, 0x03, 0x42,
++    0x00, 0x04, 0xde, 0x09, 0x08, 0x07, 0x03, 0x2e, 0x8f, 0x37, 0x9a, 0xd5,
++    0xad, 0xe5, 0xc6, 0x9d, 0xd4, 0x63, 0xc7, 0x4a, 0xe7, 0x20, 0xcb, 0x90,
++    0xa0, 0x1f, 0x18, 0x18, 0x72, 0xb5, 0x21, 0x88, 0x38, 0xc0, 0xdb, 0xba,
++    0xf6, 0x99, 0xd8, 0xa5, 0x3b, 0x83, 0xe9, 0xe3, 0xd5, 0x61, 0x99, 0x73,
++    0x42, 0xc6, 0x6c, 0xe8, 0x0a, 0x95, 0x40, 0x41, 0x3b, 0x0d, 0x10, 0xa7,
++    0x4a, 0x93, 0xdb, 0x5a, 0xe7, 0xec,
++};
++
++// kExampleECKeySpecifiedCurvePKCS8 is a sample EC private key encoded as a
++// PKCS#8 PrivateKeyInfo with P-256's parameters spelled out rather than using
++// the curve OID.
++static const uint8_t kExampleECKeySpecifiedCurvePKCS8[] = {
++    0x30, 0x82, 0x01, 0x79, 0x02, 0x01, 0x00, 0x30, 0x82, 0x01, 0x03, 0x06,
++    0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x30, 0x81, 0xf7, 0x02,
++    0x01, 0x01, 0x30, 0x2c, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x01,
++    0x01, 0x02, 0x21, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++    0x30, 0x5b, 0x04, 0x20, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc,
++    0x04, 0x20, 0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7, 0xb3, 0xeb,
++    0xbd, 0x55, 0x76, 0x98, 0x86, 0xbc, 0x65, 0x1d, 0x06, 0xb0, 0xcc, 0x53,
++    0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e, 0x27, 0xd2, 0x60, 0x4b, 0x03, 0x15,
++    0x00, 0xc4, 0x9d, 0x36, 0x08, 0x86, 0xe7, 0x04, 0x93, 0x6a, 0x66, 0x78,
++    0xe1, 0x13, 0x9d, 0x26, 0xb7, 0x81, 0x9f, 0x7e, 0x90, 0x04, 0x41, 0x04,
++    0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5,
++    0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0,
++    0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2,
++    0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16,
++    0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68,
++    0x37, 0xbf, 0x51, 0xf5, 0x02, 0x21, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00,
++    0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbc,
++    0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc,
++    0x63, 0x25, 0x51, 0x02, 0x01, 0x01, 0x04, 0x6d, 0x30, 0x6b, 0x02, 0x01,
++    0x01, 0x04, 0x20, 0x43, 0x09, 0xc0, 0x67, 0x75, 0x21, 0x47, 0x9d, 0xa8,
++    0xfa, 0x16, 0xdf, 0x15, 0x73, 0x61, 0x34, 0x68, 0x6f, 0xe3, 0x8e, 0x47,
++    0x91, 0x95, 0xab, 0x79, 0x4a, 0x72, 0x14, 0xcb, 0xe2, 0x49, 0x4f, 0xa1,
++    0x44, 0x03, 0x42, 0x00, 0x04, 0xde, 0x09, 0x08, 0x07, 0x03, 0x2e, 0x8f,
++    0x37, 0x9a, 0xd5, 0xad, 0xe5, 0xc6, 0x9d, 0xd4, 0x63, 0xc7, 0x4a, 0xe7,
++    0x20, 0xcb, 0x90, 0xa0, 0x1f, 0x18, 0x18, 0x72, 0xb5, 0x21, 0x88, 0x38,
++    0xc0, 0xdb, 0xba, 0xf6, 0x99, 0xd8, 0xa5, 0x3b, 0x83, 0xe9, 0xe3, 0xd5,
++    0x61, 0x99, 0x73, 0x42, 0xc6, 0x6c, 0xe8, 0x0a, 0x95, 0x40, 0x41, 0x3b,
++    0x0d, 0x10, 0xa7, 0x4a, 0x93, 0xdb, 0x5a, 0xe7, 0xec,
++};
++
+ // kExampleBadECKeyDER is a sample EC private key encoded as an ECPrivateKey
+ // structure. The private key is equal to the order and will fail to import.
+ static const uint8_t kExampleBadECKeyDER[] = {
+@@ -793,6 +848,20 @@ static bool Testd2i_AutoPrivateKey() {
+     return false;
+   }
+ 
++  if (!TestValidPrivateKey(kExampleECKeyPKCS8, sizeof(kExampleECKeyPKCS8),
++                           EVP_PKEY_EC)) {
++    fprintf(stderr, "d2i_AutoPrivateKey(kExampleECKeyPKCS8) failed\n");
++    return false;
++  }
++
++  if (!TestValidPrivateKey(kExampleECKeySpecifiedCurvePKCS8,
++                           sizeof(kExampleECKeySpecifiedCurvePKCS8),
++                           EVP_PKEY_EC)) {
++    fprintf(stderr,
++            "d2i_AutoPrivateKey(kExampleECKeySpecifiedCurvePKCS8) failed\n");
++    return false;
++  }
++
+   if (!TestValidPrivateKey(kExampleDSAKeyDER, sizeof(kExampleDSAKeyDER),
+                            EVP_PKEY_DSA)) {
+     fprintf(stderr, "d2i_AutoPrivateKey(kExampleDSAKeyDER) failed\n");
+diff --git a/crypto/evp/evp_test.cc b/crypto/evp/evp_test.cc
+index 839065463..a7dac2bf3 100644
+--- a/crypto/evp/evp_test.cc
++++ b/crypto/evp/evp_test.cc
+@@ -70,12 +70,11 @@
+ #pragma warning(pop)
+ #endif
+ 
+-#include <openssl/bio.h>
++#include <openssl/bytestring.h>
+ #include <openssl/crypto.h>
+ #include <openssl/digest.h>
+ #include <openssl/err.h>
+ #include <openssl/evp.h>
+-#include <openssl/pem.h>
+ 
+ #include "../test/file_test.h"
+ #include "../test/scoped_types.h"
+@@ -104,24 +103,71 @@ static const EVP_MD *GetDigest(FileTest *t, const std::string &name) {
+   return nullptr;
+ }
+ 
++static int GetKeyType(FileTest *t, const std::string &name) {
++  if (name == "RSA") {
++    return EVP_PKEY_RSA;
++  }
++  if (name == "EC") {
++    return EVP_PKEY_EC;
++  }
++  if (name == "DSA") {
++    return EVP_PKEY_DSA;
++  }
++  t->PrintLine("Unknown key type: '%s'", name.c_str());
++  return EVP_PKEY_NONE;
++}
++
+ using KeyMap = std::map<std::string, ScopedEVP_PKEY>;
+ 
+-// ImportPrivateKey evaluates a PrivateKey test in |t| and writes the resulting
+-// private key to |key_map|.
+-static bool ImportPrivateKey(FileTest *t, KeyMap *key_map) {
+-  const std::string &key_name = t->GetParameter();
+-  if (key_map->count(key_name) > 0) {
+-    t->PrintLine("Duplicate key '%s'.", key_name.c_str());
++static bool ImportKey(FileTest *t, KeyMap *key_map,
++                      EVP_PKEY *(*parse_func)(CBS *cbs),
++                      int (*marshal_func)(CBB *cbb, const EVP_PKEY *key)) {
++  std::vector<uint8_t> input;
++  if (!t->GetBytes(&input, "Input")) {
+     return false;
+   }
+-  const std::string &block = t->GetBlock();
+-  ScopedBIO bio(BIO_new_mem_buf(const_cast<char*>(block.data()), block.size()));
+-  if (!bio) {
++
++  CBS cbs;
++  CBS_init(&cbs, input.data(), input.size());
++  ScopedEVP_PKEY pkey(parse_func(&cbs));
++  if (!pkey) {
+     return false;
+   }
+-  ScopedEVP_PKEY pkey(PEM_read_bio_PrivateKey(bio.get(), nullptr, 0, nullptr));
+-  if (!pkey) {
+-    t->PrintLine("Error reading private key.");
++
++  std::string key_type;
++  if (!t->GetAttribute(&key_type, "Type")) {
++    return false;
++  }
++  if (EVP_PKEY_id(pkey.get()) != GetKeyType(t, key_type)) {
++    t->PrintLine("Bad key type.");
++    return false;
++  }
++
++  // The key must re-encode correctly.
++  ScopedCBB cbb;
++  uint8_t *der;
++  size_t der_len;
++  if (!CBB_init(cbb.get(), 0) ||
++      !marshal_func(cbb.get(), pkey.get()) ||
++      !CBB_finish(cbb.get(), &der, &der_len)) {
++    return false;
++  }
++  ScopedOpenSSLBytes free_der(der);
++
++  std::vector<uint8_t> output = input;
++  if (t->HasAttribute("Output") &&
++      !t->GetBytes(&output, "Output")) {
++    return false;
++  }
++  if (!t->ExpectBytesEqual(output.data(), output.size(), der, der_len)) {
++    t->PrintLine("Re-encoding the key did not match.");
++    return false;
++  }
++
++  // Save the key for future tests.
++  const std::string &key_name = t->GetParameter();
++  if (key_map->count(key_name) > 0) {
++    t->PrintLine("Duplicate key '%s'.", key_name.c_str());
+     return false;
+   }
+   (*key_map)[key_name] = std::move(pkey);
+@@ -131,7 +177,12 @@ static bool ImportPrivateKey(FileTest *t, KeyMap *key_map) {
+ static bool TestEVP(FileTest *t, void *arg) {
+   KeyMap *key_map = reinterpret_cast<KeyMap*>(arg);
+   if (t->GetType() == "PrivateKey") {
+-    return ImportPrivateKey(t, key_map);
++    return ImportKey(t, key_map, EVP_parse_private_key,
++                     EVP_marshal_private_key);
++  }
++
++  if (t->GetType() == "PublicKey") {
++    return ImportKey(t, key_map, EVP_parse_public_key, EVP_marshal_public_key);
+   }
+ 
+   int (*key_op_init)(EVP_PKEY_CTX *ctx);
+diff --git a/crypto/evp/evp_tests.txt b/crypto/evp/evp_tests.txt
+index 97ddaa0e6..f0601b21d 100644
+--- a/crypto/evp/evp_tests.txt
++++ b/crypto/evp/evp_tests.txt
+@@ -1,47 +1,74 @@
+ # Public key algorithm tests
+ 
+-# Private keys used for PKEY operations.
++# Keys used for PKEY operations.
+ 
+ # RSA 2048 bit key.
+-
+ PrivateKey = RSA-2048
+------BEGIN PRIVATE KEY-----
+-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDNAIHqeyrh6gbV
+-n3xz2f+5SglhXC5Lp8Y2zvCN01M+wxhVJbAVx2m5mnfWclv5w1Mqm25fZifV+4UW
+-B2jT3anL01l0URcX3D0wnS/EfuQfl+Mq23+d2GShxHZ6Zm7NcbwarPXnUX9LOFlP
+-6psF5C1a2pkSAIAT5FMWpNm7jtCGuI0odYusr5ItRqhotIXSOcm66w4rZFknEPQr
+-LR6gpLSALAvsqzKPimiwBzvbVG/uqYCdKEmRKzkMFTK8finHZY+BdfrkbzQzL/h7
+-yrPkBkm5hXeGnaDqcYNT8HInVIhpE2SHYNEivmduD8SD3SD/wxvalqMZZsmqLnWt
+-A95H4cRPAgMBAAECggEAYCl6x5kbFnoG1rJHWLjL4gi+ubLZ7Jc4vYD5Ci41AF3X
+-ziktnim6iFvTFv7x8gkTvArJDWsICLJBTYIQREHYYkozzgIzyPeApIs3Wv8C12cS
+-IopwJITbP56+zM+77hcJ26GCgA2Unp5CFuC/81WDiPi9kNo3Oh2CdD7D+90UJ/0W
+-glplejFpEuhpU2URfKL4RckJQF/KxV+JX8FdIDhsJu54yemQdQKaF4psHkzwwgDo
+-qc+yfp0Vb4bmwq3CKxqEoc1cpbJ5CHXXlAfISzUjlcuBzD/tW7BDtp7eDAcgRVAC
+-XO6MX0QBcLYSC7SOD3R7zY9SIRCFDfBDxCjf0YcFMQKBgQD2+WG0fLwDXTrt68fe
+-hQqVa2Xs25z2B2QGPxWqSFU8WNly/mZ1BW413f3De/O58vYi7icTNyVoScm+8hdv
+-6PfD+LuRujdN1TuvPeyBTSvewQwf3IjN0Wh28mse36PwlBl+301C/x+ylxEDuJjK
+-hZxCcocIaoQqtBC7ac8tNa9r4wKBgQDUfnJKf/QQSLJwwlJKQQGHi3MVm7c9PbwY
+-eyIOY1s1NPluJDoYTZP4YLa/u2txwe2aHh9FhYMCPDAelqaSwaCLU9DsnKkQEA2A
+-RR47fcagG6xK7O+N95iEa8I1oIy7os9MBoBMwRIZ6VYIxxTj8UMNSR+tu6MqV1Gg
+-T5d0WDTJpQKBgCHyRSu5uV39AoyRS/eZ8cp36JqV1Q08FtOE+EVfi9evnrPfo9WR
+-2YQt7yNfdjCo5IwIj/ZkLhAXlFNakz4el2+oUJ/HKLLaDEoaCNf883q6rh/zABrK
+-HcG7sF2d/7qhoJ9/se7zgjfZ68zHIrkzhDbd5xGREnmMJoCcGo3sQyBhAoGAH3UQ
+-qmLC2N5KPFMoJ4H0HgLQ6LQCrnhDLkScSBEBYaEUA/AtAYgKjcyTgVLXlyGkcRpg
+-esRHHr+WSBD5W+R6ReYEmeKfTJdzyDdzQE9gZjdyjC0DUbsDwybIu3OnIef6VEDq
+-IXK7oUZfzDDcsNn4mTDoFaoff5cpqFfgDgM43VkCgYBNHw11b+d+AQmaZS9QqIt7
+-aF3FvwCYHV0jdv0Mb+Kc1bY4c0R5MFpzrTwVmdOerjuuA1+9b+0Hwo3nBZM4eaBu
+-SOamA2hu2OJWCl9q8fLCT69KqWDjghhvFe7c6aJJGucwaA3Uz3eLcPqoaCarMiNH
+-fMkTd7GabVourqIZdgvu1Q==
+------END PRIVATE KEY-----
++Type = RSA
++Input = 308204bc020100300d06092a864886f70d0101010500048204a6308204a20201000282010100cd0081ea7b2ae1ea06d59f7c73d9ffb94a09615c2e4ba7c636cef08dd3533ec3185525b015c769b99a77d6725bf9c3532a9b6e5f6627d5fb85160768d3dda9cbd35974511717dc3d309d2fc47ee41f97e32adb7f9dd864a1c4767a666ecd71bc1aacf5e7517f4b38594fea9b05e42d5ada9912008013e45316a4d9bb8ed086b88d28758bacaf922d46a868b485d239c9baeb0e2b64592710f42b2d1ea0a4b4802c0becab328f8a68b0073bdb546feea9809d2849912b390c1532bc7e29c7658f8175fae46f34332ff87bcab3e40649b98577869da0ea718353f0722754886913648760d122be676e0fc483dd20ffc31bda96a31966c9aa2e75ad03de47e1c44f02030100010282010060297ac7991b167a06d6b24758b8cbe208beb9b2d9ec9738bd80f90a2e35005dd7ce292d9e29ba885bd316fef1f20913bc0ac90d6b0808b2414d82104441d8624a33ce0233c8f780a48b375aff02d76712228a702484db3f9ebecccfbbee1709dba182800d949e9e4216e0bff3558388f8bd90da373a1d82743ec3fbdd1427fd16825a657a316912e8695365117ca2f845c909405fcac55f895fc15d20386c26ee78c9e99075029a178a6c1e4cf0c200e8a9cfb27e9d156f86e6c2adc22b1a84a1cd5ca5b2790875d79407c84b352395cb81cc3fed5bb043b69ede0c07204550025cee8c5f440170b6120bb48e0f747bcd8f522110850df043c428dfd187053102818100f6f961b47cbc035d3aedebc7de850a956b65ecdb9cf60764063f15aa48553c58d972fe6675056e35ddfdc37bf3b9f2f622ee271337256849c9bef2176fe8f7c3f8bb91ba374dd53baf3dec814d2bdec10c1fdc88cdd16876f26b1edfa3f094197edf4d42ff1fb2971103b898ca859c427287086a842ab410bb69cf2d35af6be302818100d47e724a7ff41048b270c2524a4101878b73159bb73d3dbc187b220e635b3534f96e243a184d93f860b6bfbb6b71c1ed9a1e1f458583023c301e96a692c1a08b53d0ec9ca910100d80451e3b7dc6a01bac4aecef8df798846bc235a08cbba2cf4c06804cc11219e95608c714e3f1430d491fadbba32a5751a04f97745834c9a502818021f2452bb9b95dfd028c914bf799f1ca77e89a95d50d3c16d384f8455f8bd7af9eb3dfa3d591d9842def235f7630a8e48c088ff6642e101794535a933e1e976fa8509fc728b2da0c4a1a08d7fcf37abaae1ff3001aca1dc1bbb05d9dffbaa1a09f7fb1eef38237d9ebccc722b9338436dde7119112798c26809c1a8dec4320610281801f7510aa62c2d8de4a3c53282781f41e02d0e8b402ae78432e449c48110161a11403f02d01880a8dcc938152d79721a4711a607ac4471ebf964810f95be47a45e60499e29f4c9773c83773404f606637728c2d0351bb03c326c8bb73a721e7fa5440ea2172bba1465fcc30dcb0d9f89930e815aa1f7f9729a857e00e0338dd590281804d1f0d756fe77e01099a652f50a88b7b685dc5bf00981d5d2376fd0c6fe29cd5b638734479305a73ad3c1599d39eae3bae035fbd6fed07c28de705933879a06e48e6a603686ed8e2560a5f6af1f2c24faf4aa960e382186f15eedce9a2491ae730680dd4cf778b70faa86826ab3223477cc91377b19a6d5a2eaea219760beed5
+ 
+-# EC P-256 key
++# The public half of the same key encoded as a SubjectPublicKeyInfo.
++PublicKey = RSA-2048-SPKI
++Type = RSA
++Input = 30820122300d06092a864886f70d01010105000382010f003082010a0282010100cd0081ea7b2ae1ea06d59f7c73d9ffb94a09615c2e4ba7c636cef08dd3533ec3185525b015c769b99a77d6725bf9c3532a9b6e5f6627d5fb85160768d3dda9cbd35974511717dc3d309d2fc47ee41f97e32adb7f9dd864a1c4767a666ecd71bc1aacf5e7517f4b38594fea9b05e42d5ada9912008013e45316a4d9bb8ed086b88d28758bacaf922d46a868b485d239c9baeb0e2b64592710f42b2d1ea0a4b4802c0becab328f8a68b0073bdb546feea9809d2849912b390c1532bc7e29c7658f8175fae46f34332ff87bcab3e40649b98577869da0ea718353f0722754886913648760d122be676e0fc483dd20ffc31bda96a31966c9aa2e75ad03de47e1c44f0203010001
++
++# The same key but with missing parameters rather than a NULL.
++PublicKey = RSA-2048-SPKI-Invalid
++Input = 30820120300b06092a864886f70d0101010382010f003082010a0282010100cd0081ea7b2ae1ea06d59f7c73d9ffb94a09615c2e4ba7c636cef08dd3533ec3185525b015c769b99a77d6725bf9c3532a9b6e5f6627d5fb85160768d3dda9cbd35974511717dc3d309d2fc47ee41f97e32adb7f9dd864a1c4767a666ecd71bc1aacf5e7517f4b38594fea9b05e42d5ada9912008013e45316a4d9bb8ed086b88d28758bacaf922d46a868b485d239c9baeb0e2b64592710f42b2d1ea0a4b4802c0becab328f8a68b0073bdb546feea9809d2849912b390c1532bc7e29c7658f8175fae46f34332ff87bcab3e40649b98577869da0ea718353f0722754886913648760d122be676e0fc483dd20ffc31bda96a31966c9aa2e75ad03de47e1c44f0203010001
++Error = DECODE_ERROR
++
++# The same key but with an incorrectly-encoded length prefix.
++PublicKey = RSA-2048-SPKI-Invalid2
++Input = 3083000122300d06092a864886f70d01010105000382010f003082010a0282010100cd0081ea7b2ae1ea06d59f7c73d9ffb94a09615c2e4ba7c636cef08dd3533ec3185525b015c769b99a77d6725bf9c3532a9b6e5f6627d5fb85160768d3dda9cbd35974511717dc3d309d2fc47ee41f97e32adb7f9dd864a1c4767a666ecd71bc1aacf5e7517f4b38594fea9b05e42d5ada9912008013e45316a4d9bb8ed086b88d28758bacaf922d46a868b485d239c9baeb0e2b64592710f42b2d1ea0a4b4802c0becab328f8a68b0073bdb546feea9809d2849912b390c1532bc7e29c7658f8175fae46f34332ff87bcab3e40649b98577869da0ea718353f0722754886913648760d122be676e0fc483dd20ffc31bda96a31966c9aa2e75ad03de47e1c44f0203010001
++Error = DECODE_ERROR
+ 
++# EC P-256 key
+ PrivateKey = P-256
+------BEGIN PRIVATE KEY-----
+-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiocvtiiTxNH/xbnw
+-+RdYBp+DUuCPoFpJ+NuSbLVyhyWhRANCAAQsFQ9CnOcPIWwlLPXgYs4fY5zV0WXH
+-+JQkBywnGX14szuSDpXNtmTpkNzwz+oNlOKo5q+dDlgFbmUxBJJbn+bJ
+------END PRIVATE KEY-----
++Type = EC
++Input = 308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b02010104208a872fb62893c4d1ffc5b9f0f91758069f8352e08fa05a49f8db926cb5728725a144034200042c150f429ce70f216c252cf5e062ce1f639cd5d165c7f89424072c27197d78b33b920e95cdb664e990dcf0cfea0d94e2a8e6af9d0e58056e653104925b9fe6c9
++
++# The same key as above with the optional public key omitted.
++PrivateKey = P-256-MissingPublic
++Type = EC
++Input = 3041020100301306072a8648ce3d020106082a8648ce3d0301070427302502010104208a872fb62893c4d1ffc5b9f0f91758069f8352e08fa05a49f8db926cb5728725
++
++# The same key as above with redundant parameters.
++PrivateKey = P-256-ExtraParameters
++Type = EC
++Input = 308193020100301306072a8648ce3d020106082a8648ce3d0301070479307702010104208a872fb62893c4d1ffc5b9f0f91758069f8352e08fa05a49f8db926cb5728725a00a06082a8648ce3d030107a144034200042c150f429ce70f216c252cf5e062ce1f639cd5d165c7f89424072c27197d78b33b920e95cdb664e990dcf0cfea0d94e2a8e6af9d0e58056e653104925b9fe6c9
++# The key re-encodes with the parameters removed.
++Output = 308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b02010104208a872fb62893c4d1ffc5b9f0f91758069f8352e08fa05a49f8db926cb5728725a144034200042c150f429ce70f216c252cf5e062ce1f639cd5d165c7f89424072c27197d78b33b920e95cdb664e990dcf0cfea0d94e2a8e6af9d0e58056e653104925b9fe6c9
++
++# The same key, but with the redundant parameters in the ECPrivateKey mismatched.
++PrivateKey = P-256-BadInnerParameters
++Input = 308190020100301306072a8648ce3d020106082a8648ce3d0301070476307402010104208a872fb62893c4d1ffc5b9f0f91758069f8352e08fa05a49f8db926cb5728725a00706052b81040022a144034200042c150f429ce70f216c252cf5e062ce1f639cd5d165c7f89424072c27197d78b33b920e95cdb664e990dcf0cfea0d94e2a8e6af9d0e58056e653104925b9fe6c9
++Error = GROUP_MISMATCH
++
++# The public half of the same key encoded as a PublicKey.
++PublicKey = P-256-SPKI
++Type = EC
++Input = 3059301306072a8648ce3d020106082a8648ce3d030107034200042c150f429ce70f216c252cf5e062ce1f639cd5d165c7f89424072c27197d78b33b920e95cdb664e990dcf0cfea0d94e2a8e6af9d0e58056e653104925b9fe6c9
++
++# The same as above, but with the curve explicitly spelled out.
++PublicKey = P-256-SPKI
++Input = 3082014b3082010306072a8648ce3d02013081f7020101302c06072a8648ce3d0101022100ffffffff00000001000000000000000000000000ffffffffffffffffffffffff305b0420ffffffff00000001000000000000000000000000fffffffffffffffffffffffc04205ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b031500c49d360886e704936a6678e1139d26b7819f7e900441046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5022100ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551020101034200042c150f429ce70f216c252cf5e062ce1f639cd5d165c7f89424072c27197d78b33b920e95cdb664e990dcf0cfea0d94e2a8e6af9d0e58056e653104925b9fe6c9
++Error = DECODE_ERROR
++
++# A DSA private key.
++PrivateKey = DSA-1024
++Type = DSA
++Input = 308202650201003082023906072a8648ce3804013082022c02820101009e12fab3de12213501dd82aa10ca2d101d2d4ebfef4d2a3f8daa0fe0cedad8d6af85616aa2f3252c0a2b5a6db09e6f14900e0ddb8311876dd8f9669525f99ed65949e184d5064793271169a228680b95ec12f59a8e20b21f2b58eb2a2012d35bde2ee351822fe8f32d0a330565dcce5c672b7259c14b2433d0b5b2ca2b2db0ab626e8f13f47fe0345d904e7294bb038e9ce21a9e580b83356278706cfe768436c69de149ccff98b4aab8cb4f6385c9f102ce59346eaeef27e0ad222d53d6e89cc8cde5776dd00057b03f2d88ab3cedbafd7b585f0b7f7835e17a3728bbf25ea62572f245dc111f3ce39cb6ffacc31b0a2790e7bde90224ea9b09315362af3d2b022100f381dcf53ebf724f8b2e5ca82c010fb4b5eda9358d0fd88ed278589488b54fc3028201000c402a725dcc3a62e02bf4cf43cd17f4a493591220223669cf4193edab423ad08dfb552e308a6a57a5ffbc7cd0fb2087f81f8df0cb08ab2133287d2b6968714a94f633c940845a48a3e16708dde761cc6a8eab2d84db21b6ea5b07681493cc9c31fbc368b243f6ddf8c932a8b4038f44e7b15ca876344a147859f2b43b39458668ad5e0a1a9a669546dd2812e3b3617a0aef99d58e3bb4cc87fd94225e01d2dcc469a77268146c51918f18e8b4d70aa1f0c7623bcc52cf3731d38641b2d2830b7eecb2f09552ff137d046e494e7f33c3590002b16d1b97d936fda28f90c3ed3ca35338168ac16f77c3c57adc2e8f7c6c2256e41a5f65450590dbb5bcf06d66610423022100b0c768702743bc51242993a971a52889795444f7c6452203d0ce84fe6117d46e
++
++# A DSA public key.
++PublicKey = DSA-1024-SPKI
++Type = DSA
++Input = 308201b73082012c06072a8648ce3804013082011f02818100b3429b8b128c9079f9b72e86857e98d265e5d91661ed8b5f4cc56e5eed1e571da30186983a9dd76297eab73ee13a1db841f8800d04a7cab478af6cde2ea4a2868531af169a24858c6268efa39ceb7ed0d4227eb5bbb01124a2a5a26038c7bcfb8cc827f68f5202345166e4718596799b65c9def82828ce44e62e38e41a0d24b1021500c5a56c81ddd87f47e676546c56d05706421624cf0281810094de40d27314fe929e47ff9b1ac65cfc73ef38c4d381c890be6217b15039ae18190e6b421af8c0bda35a5cfd050f58ae2644adce83e68c8e5ba11729df56bbb21e227a60b816cc033fa799a38fe1ba5b4aa1801b6f841ce3df99feb3b4fb96950c960af13fa2ce920aabc12dd24ad2044a35063ea0e25f67f560f4cfbdc5598303818400028180258c30ebbb7f34fdc873ce679f6cea373c7886d75d4421b90920db034daedd292c64d8edd8cdbdd7f3ad23d74cfa2135247d0cef6ecf2e14f99e19d22a8c1266bd8fb8719c0e5667c716c45c7adbdabe548085bdad2dfee636f8d52fd6adb2193df6c4f0520fbd171b91882e0e4f321f8250ffecf4dbea00e114427d3ef96c1a
++
++# The same key as above, but without the parameters.
++PublicKey = DSA-1024-SPKI-No-Params
++Type = DSA
++Input = 308192300906072a8648ce38040103818400028180258c30ebbb7f34fdc873ce679f6cea373c7886d75d4421b90920db034daedd292c64d8edd8cdbdd7f3ad23d74cfa2135247d0cef6ecf2e14f99e19d22a8c1266bd8fb8719c0e5667c716c45c7adbdabe548085bdad2dfee636f8d52fd6adb2193df6c4f0520fbd171b91882e0e4f321f8250ffecf4dbea00e114427d3ef96c1a
++
+ 
+ # RSA tests
+ 
+@@ -55,6 +82,11 @@ Digest = SHA1
+ Input = "0123456789ABCDEF1234"
+ Output = c09d402423cbf233d26cae21f954547bc43fe80fd41360a0336cfdbe9aedad05bef6fd2eaee6cd60089a52482d4809a238149520df3bdde4cb9e23d9307b05c0a6f327052325a29adf2cc95b66523be7024e2a585c3d4db15dfbe146efe0ecdc0402e33fe5d40324ee96c5c3edd374a15cdc0f5d84aa243c0f07e188c6518fbfceae158a9943be398e31097da81b62074f626eff738be6160741d5a26957a482b3251fd85d8df78b98148459de10aa93305dbb4a5230aa1da291a9b0e481918f99b7638d72bb687f97661d304ae145d64a474437a4ef39d7b8059332ddeb07e92bf6e0e3acaf8afedc93795e4511737ec1e7aab6d5bc9466afc950c1c17b48ad
+ 
++Verify = RSA-2048-SPKI
++Digest = SHA1
++Input = "0123456789ABCDEF1234"
++Output = c09d402423cbf233d26cae21f954547bc43fe80fd41360a0336cfdbe9aedad05bef6fd2eaee6cd60089a52482d4809a238149520df3bdde4cb9e23d9307b05c0a6f327052325a29adf2cc95b66523be7024e2a585c3d4db15dfbe146efe0ecdc0402e33fe5d40324ee96c5c3edd374a15cdc0f5d84aa243c0f07e188c6518fbfceae158a9943be398e31097da81b62074f626eff738be6160741d5a26957a482b3251fd85d8df78b98148459de10aa93305dbb4a5230aa1da291a9b0e481918f99b7638d72bb687f97661d304ae145d64a474437a4ef39d7b8059332ddeb07e92bf6e0e3acaf8afedc93795e4511737ec1e7aab6d5bc9466afc950c1c17b48ad
++
+ # Digest too long
+ Sign = RSA-2048
+ Digest = SHA1
+@@ -125,6 +157,11 @@ Digest = SHA1
+ Input = "0123456789ABCDEF1234"
+ Output = 3045022100b1d1cb1a577035bccdd5a86c6148c2cc7c633cd42b7234139b593076d041e15202201898cdd52b41ca502098184b409cf83a21bc945006746e3b7cea52234e043ec8
+ 
++Verify = P-256-SPKI
++Digest = SHA1
++Input = "0123456789ABCDEF1234"
++Output = 3045022100b1d1cb1a577035bccdd5a86c6148c2cc7c633cd42b7234139b593076d041e15202201898cdd52b41ca502098184b409cf83a21bc945006746e3b7cea52234e043ec8
++
+ # Digest too long
+ Verify = P-256
+ Digest = SHA1
+diff --git a/crypto/evp/internal.h b/crypto/evp/internal.h
+index 67b2a659a..7fe707e17 100644
+--- a/crypto/evp/internal.h
++++ b/crypto/evp/internal.h
+@@ -90,13 +90,32 @@ struct evp_pkey_asn1_method_st {
+ 
+   const char *pem_str;
+ 
+-  int (*pub_decode)(EVP_PKEY *pk, X509_PUBKEY *pub);
+-  int (*pub_encode)(X509_PUBKEY *pub, const EVP_PKEY *pk);
++  /* pub_decode decodes |params| and |key| as a SubjectPublicKeyInfo
++   * and writes the result into |out|. It returns one on success and zero on
++   * error. |params| is the AlgorithmIdentifier after the OBJECT IDENTIFIER
++   * type field, and |key| is the contents of the subjectPublicKey with the
++   * leading padding byte checked and removed. Although X.509 uses BIT STRINGs
++   * to represent SubjectPublicKeyInfo, every key type defined encodes the key
++   * as a byte string with the same conversion to BIT STRING. */
++  int (*pub_decode)(EVP_PKEY *out, CBS *params, CBS *key);
++
++  /* pub_encode encodes |key| as a SubjectPublicKeyInfo and appends the result
++   * to |out|. It returns one on success and zero on error. */
++  int (*pub_encode)(CBB *out, const EVP_PKEY *key);
++
+   int (*pub_cmp)(const EVP_PKEY *a, const EVP_PKEY *b);
+   int (*pub_print)(BIO *out, const EVP_PKEY *pkey, int indent, ASN1_PCTX *pctx);
+ 
+-  int (*priv_decode)(EVP_PKEY *pk, PKCS8_PRIV_KEY_INFO *p8inf);
+-  int (*priv_encode)(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pk);
++  /* priv_decode decodes |params| and |key| as a PrivateKeyInfo and writes the
++   * result into |out|. It returns one on success and zero on error. |params| is
++   * the AlgorithmIdentifier after the OBJECT IDENTIFIER type field, and |key|
++   * is the contents of the OCTET STRING privateKey field. */
++  int (*priv_decode)(EVP_PKEY *out, CBS *params, CBS *key);
++
++  /* priv_encode encodes |key| as a PrivateKeyInfo and appends the result to
++   * |out|. It returns one on success and zero on error. */
++  int (*priv_encode)(CBB *out, const EVP_PKEY *key);
++
+   int (*priv_print)(BIO *out, const EVP_PKEY *pkey, int indent,
+                     ASN1_PCTX *pctx);
+ 
+@@ -113,8 +132,6 @@ struct evp_pkey_asn1_method_st {
+   int (*pkey_size)(const EVP_PKEY *pk);
+   int (*pkey_bits)(const EVP_PKEY *pk);
+ 
+-  int (*param_decode)(EVP_PKEY *pkey, const uint8_t **pder, int derlen);
+-  int (*param_encode)(const EVP_PKEY *pkey, uint8_t **pder);
+   int (*param_missing)(const EVP_PKEY *pk);
+   int (*param_copy)(EVP_PKEY *to, const EVP_PKEY *from);
+   int (*param_cmp)(const EVP_PKEY *a, const EVP_PKEY *b);
+@@ -130,7 +147,6 @@ struct evp_pkey_asn1_method_st {
+ 
+   int (*old_priv_decode)(EVP_PKEY *pkey, const uint8_t **pder,
+                          int derlen);
+-  int (*old_priv_encode)(const EVP_PKEY *pkey, uint8_t **pder);
+ 
+   /* Converting parameters to/from AlgorithmIdentifier (X509_ALGOR). */
+   int (*digest_verify_init_from_algorithm)(EVP_MD_CTX *ctx,
+diff --git a/crypto/evp/p_dsa_asn1.c b/crypto/evp/p_dsa_asn1.c
+index a876eef48..09f69090b 100644
+--- a/crypto/evp/p_dsa_asn1.c
++++ b/crypto/evp/p_dsa_asn1.c
+@@ -58,287 +58,139 @@
+ #include <openssl/asn1.h>
+ #include <openssl/asn1t.h>
+ #include <openssl/digest.h>
++#include <openssl/bn.h>
++#include <openssl/bytestring.h>
+ #include <openssl/dsa.h>
+ #include <openssl/err.h>
+ #include <openssl/mem.h>
+ #include <openssl/obj.h>
+ #include <openssl/x509.h>
+ 
+-#include "../dsa/internal.h"
+ #include "internal.h"
+ 
+ 
+-static int dsa_pub_decode(EVP_PKEY *pkey, X509_PUBKEY *pubkey) {
+-  const uint8_t *p, *pm;
+-  int pklen, pmlen;
+-  int ptype;
+-  void *pval;
+-  ASN1_STRING *pstr;
+-  X509_ALGOR *palg;
+-  ASN1_INTEGER *public_key = NULL;
++static int dsa_pub_decode(EVP_PKEY *out, CBS *params, CBS *key) {
++  /* See RFC 3279, section 2.3.2. */
+ 
+-  DSA *dsa = NULL;
+-
+-  if (!X509_PUBKEY_get0_param(NULL, &p, &pklen, &palg, pubkey)) {
+-    return 0;
+-  }
+-  X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+-
+-  if (ptype == V_ASN1_SEQUENCE) {
+-    pstr = pval;
+-    pm = pstr->data;
+-    pmlen = pstr->length;
+-
+-    dsa = d2i_DSAparams(NULL, &pm, pmlen);
+-    if (dsa == NULL) {
+-      OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+-      goto err;
+-    }
+-  } else if (ptype == V_ASN1_NULL || ptype == V_ASN1_UNDEF) {
++  /* Parameters may or may not be present. */
++  DSA *dsa;
++  if (CBS_len(params) == 0) {
+     dsa = DSA_new();
+     if (dsa == NULL) {
+-      OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-      goto err;
++      return 0;
+     }
+   } else {
+-    OPENSSL_PUT_ERROR(EVP, EVP_R_PARAMETER_ENCODING_ERROR);
+-    goto err;
++    dsa = DSA_parse_parameters(params);
++    if (dsa == NULL || CBS_len(params) != 0) {
++      OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++      goto err;
++    }
+   }
+ 
+-  public_key = d2i_ASN1_INTEGER(NULL, &p, pklen);
+-  if (public_key == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++  dsa->pub_key = BN_new();
++  if (dsa->pub_key == NULL) {
+     goto err;
+   }
+ 
+-  dsa->pub_key = ASN1_INTEGER_to_BN(public_key, NULL);
+-  if (dsa->pub_key == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, EVP_R_BN_DECODE_ERROR);
++  if (!BN_parse_asn1_unsigned(key, dsa->pub_key) ||
++      CBS_len(key) != 0) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+     goto err;
+   }
+ 
+-  ASN1_INTEGER_free(public_key);
+-  EVP_PKEY_assign_DSA(pkey, dsa);
++  EVP_PKEY_assign_DSA(out, dsa);
+   return 1;
+ 
+ err:
+-  ASN1_INTEGER_free(public_key);
+   DSA_free(dsa);
+   return 0;
+ }
+ 
+-static int dsa_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey) {
+-  DSA *dsa;
+-  ASN1_STRING *pval = NULL;
+-  uint8_t *penc = NULL;
+-  int penclen;
+-
+-  dsa = pkey->pkey.dsa;
+-  dsa->write_params = 0;
+-
+-  int ptype;
+-  if (dsa->p && dsa->q && dsa->g) {
+-    pval = ASN1_STRING_new();
+-    if (!pval) {
+-      OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-      goto err;
+-    }
+-    pval->length = i2d_DSAparams(dsa, &pval->data);
+-    if (pval->length <= 0) {
+-      OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-      goto err;
+-    }
+-    ptype = V_ASN1_SEQUENCE;
+-  } else {
+-    ptype = V_ASN1_UNDEF;
+-  }
+-
+-  penclen = i2d_DSAPublicKey(dsa, &penc);
+-  if (penclen <= 0) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-    goto err;
+-  }
+-
+-  if (X509_PUBKEY_set0_param(pk, OBJ_nid2obj(EVP_PKEY_DSA), ptype, pval,
+-                             penc, penclen)) {
+-    return 1;
+-  }
+-
+-err:
+-  OPENSSL_free(penc);
+-  ASN1_STRING_free(pval);
+-
+-  return 0;
+-}
+-
+-static int dsa_priv_decode(EVP_PKEY *pkey, PKCS8_PRIV_KEY_INFO *p8) {
+-  const uint8_t *p, *pm;
+-  int pklen, pmlen;
+-  int ptype;
+-  void *pval;
+-  ASN1_STRING *pstr;
+-  X509_ALGOR *palg;
+-  ASN1_INTEGER *privkey = NULL;
+-  BN_CTX *ctx = NULL;
+-
+-  /* In PKCS#8 DSA: you just get a private key integer and parameters in the
+-   * AlgorithmIdentifier the pubkey must be recalculated. */
+-
+-  STACK_OF(ASN1_TYPE) *ndsa = NULL;
+-  DSA *dsa = NULL;
+-
+-  if (!PKCS8_pkey_get0(NULL, &p, &pklen, &palg, p8)) {
++static int dsa_pub_encode(CBB *out, const EVP_PKEY *key) {
++  const DSA *dsa = key->pkey.dsa;
++  const int has_params = dsa->p != NULL && dsa->q != NULL && dsa->g != NULL;
++
++  /* See RFC 5480, section 2. */
++  CBB spki, algorithm, key_bitstring;
++  if (!CBB_add_asn1(out, &spki, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1(&spki, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !OBJ_nid2cbb(&algorithm, NID_dsa) ||
++      (has_params &&
++       !DSA_marshal_parameters(&algorithm, dsa)) ||
++      !CBB_add_asn1(&spki, &key_bitstring, CBS_ASN1_BITSTRING) ||
++      !CBB_add_u8(&key_bitstring, 0 /* padding */) ||
++      !BN_marshal_asn1(&key_bitstring, dsa->pub_key) ||
++      !CBB_flush(out)) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_ENCODE_ERROR);
+     return 0;
+   }
+-  X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+-
+-  /* Check for broken DSA PKCS#8, UGH! */
+-  if (*p == (V_ASN1_SEQUENCE | V_ASN1_CONSTRUCTED)) {
+-    ASN1_TYPE *t1, *t2;
+-    ndsa = d2i_ASN1_SEQUENCE_ANY(NULL, &p, pklen);
+-    if (ndsa == NULL) {
+-      goto decerr;
+-    }
+-    if (sk_ASN1_TYPE_num(ndsa) != 2) {
+-      goto decerr;
+-    }
+ 
+-    /* Handle Two broken types:
+-     * SEQUENCE {parameters, priv_key}
+-     * SEQUENCE {pub_key, priv_key}. */
+-
+-    t1 = sk_ASN1_TYPE_value(ndsa, 0);
+-    t2 = sk_ASN1_TYPE_value(ndsa, 1);
+-    if (t1->type == V_ASN1_SEQUENCE) {
+-      p8->broken = PKCS8_EMBEDDED_PARAM;
+-      pval = t1->value.ptr;
+-    } else if (ptype == V_ASN1_SEQUENCE) {
+-      p8->broken = PKCS8_NS_DB;
+-    } else {
+-      goto decerr;
+-    }
++  return 1;
++}
+ 
+-    if (t2->type != V_ASN1_INTEGER) {
+-      goto decerr;
+-    }
++static int dsa_priv_decode(EVP_PKEY *out, CBS *params, CBS *key) {
++  /* See PKCS#11, v2.40, section 2.5. */
+ 
+-    privkey = t2->value.integer;
+-  } else {
+-    const uint8_t *q = p;
+-    privkey = d2i_ASN1_INTEGER(NULL, &p, pklen);
+-    if (privkey == NULL) {
+-      goto decerr;
+-    }
+-    if (privkey->type == V_ASN1_NEG_INTEGER) {
+-      p8->broken = PKCS8_NEG_PRIVKEY;
+-      ASN1_INTEGER_free(privkey);
+-      privkey = d2i_ASN1_UINTEGER(NULL, &q, pklen);
+-      if (privkey == NULL) {
+-        goto decerr;
+-      }
+-    }
+-    if (ptype != V_ASN1_SEQUENCE) {
+-      goto decerr;
+-    }
++  /* Decode parameters. */
++  BN_CTX *ctx = NULL;
++  DSA *dsa = DSA_parse_parameters(params);
++  if (dsa == NULL || CBS_len(params) != 0) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++    goto err;
+   }
+ 
+-  pstr = pval;
+-  pm = pstr->data;
+-  pmlen = pstr->length;
+-  dsa = d2i_DSAparams(NULL, &pm, pmlen);
+-  if (dsa == NULL) {
+-    goto decerr;
+-  }
+-  /* We have parameters. Now set private key */
+-  dsa->priv_key = ASN1_INTEGER_to_BN(privkey, NULL);
+-  if (dsa->priv_key == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_LIB_BN);
+-    goto dsaerr;
+-  }
+-  /* Calculate public key. */
++  dsa->priv_key = BN_new();
+   dsa->pub_key = BN_new();
+-  if (dsa->pub_key == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-    goto dsaerr;
++  if (dsa->priv_key == NULL || dsa->pub_key == NULL) {
++    goto err;
+   }
+-  ctx = BN_CTX_new();
+-  if (ctx == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-    goto dsaerr;
++
++  /* Decode the key. */
++  if (!BN_parse_asn1_unsigned(key, dsa->priv_key) ||
++      CBS_len(key) != 0) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++    goto err;
+   }
+ 
+-  if (!BN_mod_exp(dsa->pub_key, dsa->g, dsa->priv_key, dsa->p, ctx)) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_LIB_BN);
+-    goto dsaerr;
++  /* Calculate the public key. */
++  ctx = BN_CTX_new();
++  if (ctx == NULL ||
++      !BN_mod_exp(dsa->pub_key, dsa->g, dsa->priv_key, dsa->p, ctx)) {
++    goto err;
+   }
+ 
+-  EVP_PKEY_assign_DSA(pkey, dsa);
+   BN_CTX_free(ctx);
+-  sk_ASN1_TYPE_pop_free(ndsa, ASN1_TYPE_free);
+-  ASN1_INTEGER_free(privkey);
+-
++  EVP_PKEY_assign_DSA(out, dsa);
+   return 1;
+ 
+-decerr:
+-  OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+-
+-dsaerr:
++err:
+   BN_CTX_free(ctx);
+-  ASN1_INTEGER_free(privkey);
+-  sk_ASN1_TYPE_pop_free(ndsa, ASN1_TYPE_free);
+   DSA_free(dsa);
+   return 0;
+ }
+ 
+-static int dsa_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey) {
+-  ASN1_STRING *params = NULL;
+-  ASN1_INTEGER *prkey = NULL;
+-  uint8_t *dp = NULL;
+-  int dplen;
+-
+-  if (!pkey->pkey.dsa || !pkey->pkey.dsa->priv_key) {
++static int dsa_priv_encode(CBB *out, const EVP_PKEY *key) {
++  const DSA *dsa = key->pkey.dsa;
++  if (dsa == NULL || dsa->priv_key == NULL) {
+     OPENSSL_PUT_ERROR(EVP, EVP_R_MISSING_PARAMETERS);
+-    goto err;
+-  }
+-
+-  params = ASN1_STRING_new();
+-  if (!params) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-    goto err;
+-  }
+-
+-  params->length = i2d_DSAparams(pkey->pkey.dsa, &params->data);
+-  if (params->length <= 0) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-    goto err;
+-  }
+-  params->type = V_ASN1_SEQUENCE;
+-
+-  /* Get private key into integer. */
+-  prkey = BN_to_ASN1_INTEGER(pkey->pkey.dsa->priv_key, NULL);
+-
+-  if (!prkey) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_LIB_BN);
+-    goto err;
++    return 0;
+   }
+ 
+-  dplen = i2d_ASN1_INTEGER(prkey, &dp);
+-
+-  ASN1_INTEGER_free(prkey);
+-  prkey = NULL;
+-
+-  if (!PKCS8_pkey_set0(p8, (ASN1_OBJECT *)OBJ_nid2obj(NID_dsa), 0,
+-                       V_ASN1_SEQUENCE, params, dp, dplen)) {
+-    goto err;
++  /* See PKCS#11, v2.40, section 2.5. */
++  CBB pkcs8, algorithm, private_key;
++  if (!CBB_add_asn1(out, &pkcs8, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1_uint64(&pkcs8, 0 /* version */) ||
++      !CBB_add_asn1(&pkcs8, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !OBJ_nid2cbb(&algorithm, NID_dsa) ||
++      !DSA_marshal_parameters(&algorithm, dsa) ||
++      !CBB_add_asn1(&pkcs8, &private_key, CBS_ASN1_OCTETSTRING) ||
++      !BN_marshal_asn1(&private_key, dsa->priv_key) ||
++      !CBB_flush(out)) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_ENCODE_ERROR);
++    return 0;
+   }
+ 
+   return 1;
+-
+-err:
+-  OPENSSL_free(dp);
+-  ASN1_STRING_free(params);
+-  ASN1_INTEGER_free(prkey);
+-  return 0;
+ }
+ 
+ static int int_dsa_size(const EVP_PKEY *pkey) {
+@@ -463,21 +315,6 @@ err:
+   return ret;
+ }
+ 
+-static int dsa_param_decode(EVP_PKEY *pkey, const uint8_t **pder, int derlen) {
+-  DSA *dsa;
+-  dsa = d2i_DSAparams(NULL, pder, derlen);
+-  if (dsa == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_DSA_LIB);
+-    return 0;
+-  }
+-  EVP_PKEY_assign_DSA(pkey, dsa);
+-  return 1;
+-}
+-
+-static int dsa_param_encode(const EVP_PKEY *pkey, uint8_t **pder) {
+-  return i2d_DSAparams(pkey->pkey.dsa, pder);
+-}
+-
+ static int dsa_param_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+                            ASN1_PCTX *ctx) {
+   return do_dsa_print(bp, pkey->pkey.dsa, indent, 0);
+@@ -505,10 +342,6 @@ static int old_dsa_priv_decode(EVP_PKEY *pkey, const uint8_t **pder,
+   return 1;
+ }
+ 
+-static int old_dsa_priv_encode(const EVP_PKEY *pkey, uint8_t **pder) {
+-  return i2d_DSAPrivateKey(pkey->pkey.dsa, pder);
+-}
+-
+ static int dsa_sig_print(BIO *bp, const X509_ALGOR *sigalg,
+                          const ASN1_STRING *sig, int indent, ASN1_PCTX *pctx) {
+   DSA_SIG *dsa_sig;
+@@ -570,8 +403,6 @@ const EVP_PKEY_ASN1_METHOD dsa_asn1_meth = {
+   int_dsa_size,
+   dsa_bits,
+ 
+-  dsa_param_decode,
+-  dsa_param_encode,
+   dsa_missing_parameters,
+   dsa_copy_parameters,
+   dsa_cmp_parameters,
+@@ -580,7 +411,6 @@ const EVP_PKEY_ASN1_METHOD dsa_asn1_meth = {
+ 
+   int_dsa_free,
+   old_dsa_priv_decode,
+-  old_dsa_priv_encode,
+ 
+   NULL  /* digest_verify_init_from_algorithm */,
+   NULL  /* digest_sign_algorithm */,
+diff --git a/crypto/evp/p_ec.c b/crypto/evp/p_ec.c
+index f842c2705..495218272 100644
+--- a/crypto/evp/p_ec.c
++++ b/crypto/evp/p_ec.c
+@@ -57,7 +57,6 @@
+ 
+ #include <string.h>
+ 
+-#include <openssl/asn1.h>
+ #include <openssl/bn.h>
+ #include <openssl/buf.h>
+ #include <openssl/digest.h>
+diff --git a/crypto/evp/p_ec_asn1.c b/crypto/evp/p_ec_asn1.c
+index e093c1830..14f38396f 100644
+--- a/crypto/evp/p_ec_asn1.c
++++ b/crypto/evp/p_ec_asn1.c
+@@ -57,7 +57,10 @@
+ 
+ #include <openssl/asn1t.h>
+ #include <openssl/bn.h>
++#include <openssl/bytestring.h>
+ #include <openssl/ec.h>
++#include <openssl/ec_key.h>
++#include <openssl/ecdsa.h>
+ #include <openssl/err.h>
+ #include <openssl/mem.h>
+ #include <openssl/obj.h>
+@@ -66,102 +69,65 @@
+ #include "internal.h"
+ 
+ 
+-static int eckey_param2type(int *pptype, void **ppval, EC_KEY *ec_key) {
+-  const EC_GROUP *group;
+-  int nid;
+-
+-  if (ec_key == NULL || (group = EC_KEY_get0_group(ec_key)) == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, EVP_R_MISSING_PARAMETERS);
+-    return 0;
+-  }
+-
+-  nid = EC_GROUP_get_curve_name(group);
+-  if (nid == NID_undef) {
++static int eckey_pub_encode(CBB *out, const EVP_PKEY *key) {
++  const EC_KEY *ec_key = key->pkey.ec;
++  const EC_GROUP *group = EC_KEY_get0_group(ec_key);
++  int curve_nid = EC_GROUP_get_curve_name(group);
++  if (curve_nid == NID_undef) {
+     OPENSSL_PUT_ERROR(EVP, EVP_R_NO_NID_FOR_CURVE);
+     return 0;
+   }
+-
+-  *ppval = (void*) OBJ_nid2obj(nid);
+-  *pptype = V_ASN1_OBJECT;
+-  return 1;
+-}
+-
+-static int eckey_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey) {
+-  EC_KEY *ec_key = pkey->pkey.ec;
+-  void *pval = NULL;
+-  int ptype;
+-  uint8_t *penc = NULL, *p;
+-  int penclen;
+-
+-  if (!eckey_param2type(&ptype, &pval, ec_key)) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_EC_LIB);
++  const EC_POINT *public_key = EC_KEY_get0_public_key(ec_key);
++
++  /* See RFC 5480, section 2. */
++  CBB spki, algorithm, key_bitstring;
++  if (!CBB_add_asn1(out, &spki, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1(&spki, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !OBJ_nid2cbb(&algorithm, NID_X9_62_id_ecPublicKey) ||
++      !OBJ_nid2cbb(&algorithm, curve_nid) ||
++      !CBB_add_asn1(&spki, &key_bitstring, CBS_ASN1_BITSTRING) ||
++      !CBB_add_u8(&key_bitstring, 0 /* padding */) ||
++      !EC_POINT_point2cbb(&key_bitstring, group, public_key,
++                          POINT_CONVERSION_UNCOMPRESSED, NULL) ||
++      !CBB_flush(out)) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_ENCODE_ERROR);
+     return 0;
+   }
+-  penclen = i2o_ECPublicKey(ec_key, NULL);
+-  if (penclen <= 0) {
+-    goto err;
+-  }
+-  penc = OPENSSL_malloc(penclen);
+-  if (!penc) {
+-    goto err;
+-  }
+-  p = penc;
+-  penclen = i2o_ECPublicKey(ec_key, &p);
+-  if (penclen <= 0) {
+-    goto err;
+-  }
+-  if (X509_PUBKEY_set0_param(pk, OBJ_nid2obj(EVP_PKEY_EC), ptype, pval, penc,
+-                             penclen)) {
+-    return 1;
+-  }
+ 
+-err:
+-  if (ptype == V_ASN1_OBJECT) {
+-    ASN1_OBJECT_free(pval);
+-  } else {
+-    ASN1_STRING_free(pval);
+-  }
+-  if (penc) {
+-    OPENSSL_free(penc);
+-  }
+-  return 0;
++  return 1;
+ }
+ 
+-static int eckey_pub_decode(EVP_PKEY *pkey, X509_PUBKEY *pubkey) {
+-  const uint8_t *p = NULL;
+-  void *pval;
+-  int ptype, pklen;
+-  EC_KEY *eckey = NULL;
+-  X509_ALGOR *palg;
++static int eckey_pub_decode(EVP_PKEY *out, CBS *params, CBS *key) {
++  /* See RFC 5480, section 2. */
+ 
+-  if (!X509_PUBKEY_get0_param(NULL, &p, &pklen, &palg, pubkey)) {
+-    return 0;
+-  }
+-  X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+-
+-  if (ptype != V_ASN1_OBJECT) {
++  /* The parameters are a named curve. */
++  CBS named_curve;
++  if (!CBS_get_asn1(params, &named_curve, CBS_ASN1_OBJECT) ||
++      CBS_len(params) != 0) {
+     OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+     return 0;
+   }
+-  eckey = EC_KEY_new_by_curve_name(OBJ_obj2nid((ASN1_OBJECT *)pval));
++
++  EC_KEY *eckey = EC_KEY_new_by_curve_name(OBJ_cbs2nid(&named_curve));
+   if (eckey == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_EC_LIB);
+     return 0;
+   }
+ 
+-  /* We have parameters now set public key */
+-  if (!o2i_ECPublicKey(&eckey, &p, pklen)) {
+-    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++  EC_POINT *point = EC_POINT_new(EC_KEY_get0_group(eckey));
++  if (point == NULL ||
++      !EC_POINT_oct2point(EC_KEY_get0_group(eckey), point, CBS_data(key),
++                          CBS_len(key), NULL) ||
++      !EC_KEY_set_public_key(eckey, point)) {
+     goto err;
+   }
+ 
+-  EVP_PKEY_assign_EC_KEY(pkey, eckey);
++  EC_POINT_free(point);
++  EVP_PKEY_assign_EC_KEY(out, eckey);
+   return 1;
+ 
+ err:
+-  if (eckey) {
+-    EC_KEY_free(eckey);
+-  }
++  EC_POINT_free(point);
++  EC_KEY_free(eckey);
+   return 0;
+ }
+ 
+@@ -180,124 +146,52 @@ static int eckey_pub_cmp(const EVP_PKEY *a, const EVP_PKEY *b) {
+   }
+ }
+ 
+-static EC_KEY *eckey_type2param(int ptype, void *pval) {
+-  EC_KEY *eckey = NULL;
+-
+-  if (ptype == V_ASN1_SEQUENCE) {
+-    ASN1_STRING *pstr = pval;
+-    const uint8_t *pm = pstr->data;
+-    int pmlen = pstr->length;
+-
+-    eckey = d2i_ECParameters(NULL, &pm, pmlen);
+-    if (eckey == NULL) {
+-      OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+-      goto err;
+-    }
+-  } else if (ptype == V_ASN1_OBJECT) {
+-    ASN1_OBJECT *poid = pval;
+-
+-    /* type == V_ASN1_OBJECT => the parameters are given
+-     * by an asn1 OID */
+-    eckey = EC_KEY_new_by_curve_name(OBJ_obj2nid(poid));
+-    if (eckey == NULL) {
+-      goto err;
+-    }
+-  } else {
++static int eckey_priv_decode(EVP_PKEY *out, CBS *params, CBS *key) {
++  /* See RFC 5915. */
++  EC_GROUP *group = EC_KEY_parse_parameters(params);
++  if (group == NULL || CBS_len(params) != 0) {
+     OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+-    goto err;
+-  }
+-
+-  return eckey;
+-
+-err:
+-  if (eckey) {
+-    EC_KEY_free(eckey);
+-  }
+-  return NULL;
+-}
+-
+-static int eckey_priv_decode(EVP_PKEY *pkey, PKCS8_PRIV_KEY_INFO *p8) {
+-  const uint8_t *p = NULL;
+-  void *pval;
+-  int ptype, pklen;
+-  EC_KEY *eckey = NULL;
+-  X509_ALGOR *palg;
+-
+-  if (!PKCS8_pkey_get0(NULL, &p, &pklen, &palg, p8)) {
++    EC_GROUP_free(group);
+     return 0;
+   }
+-  X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+-
+-  eckey = eckey_type2param(ptype, pval);
+ 
+-  if (!eckey) {
+-    goto ecliberr;
+-  }
+-
+-  /* We have parameters now set private key */
+-  if (!d2i_ECPrivateKey(&eckey, &p, pklen)) {
++  EC_KEY *ec_key = EC_KEY_parse_private_key(key, group);
++  EC_GROUP_free(group);
++  if (ec_key == NULL || CBS_len(key) != 0) {
+     OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+-    goto ecerr;
++    EC_KEY_free(ec_key);
++    return 0;
+   }
+ 
+-  EVP_PKEY_assign_EC_KEY(pkey, eckey);
++  EVP_PKEY_assign_EC_KEY(out, ec_key);
+   return 1;
+-
+-ecliberr:
+-  OPENSSL_PUT_ERROR(EVP, ERR_R_EC_LIB);
+-ecerr:
+-  if (eckey) {
+-    EC_KEY_free(eckey);
+-  }
+-  return 0;
+ }
+ 
+-static int eckey_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey) {
+-  EC_KEY *ec_key;
+-  uint8_t *ep, *p;
+-  int eplen, ptype;
+-  void *pval;
+-  unsigned int tmp_flags, old_flags;
+-
+-  ec_key = pkey->pkey.ec;
+-
+-  if (!eckey_param2type(&ptype, &pval, ec_key)) {
+-    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+-    return 0;
+-  }
+-
+-  /* set the private key */
+-
+-  /* do not include the parameters in the SEC1 private key
+-   * see PKCS#11 12.11 */
+-  old_flags = EC_KEY_get_enc_flags(ec_key);
+-  tmp_flags = old_flags | EC_PKEY_NO_PARAMETERS;
+-  EC_KEY_set_enc_flags(ec_key, tmp_flags);
+-  eplen = i2d_ECPrivateKey(ec_key, NULL);
+-  if (!eplen) {
+-    EC_KEY_set_enc_flags(ec_key, old_flags);
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_EC_LIB);
+-    return 0;
+-  }
+-  ep = OPENSSL_malloc(eplen);
+-  if (!ep) {
+-    EC_KEY_set_enc_flags(ec_key, old_flags);
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
+-    return 0;
+-  }
+-  p = ep;
+-  if (!i2d_ECPrivateKey(ec_key, &p)) {
+-    EC_KEY_set_enc_flags(ec_key, old_flags);
+-    OPENSSL_free(ep);
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_EC_LIB);
++static int eckey_priv_encode(CBB *out, const EVP_PKEY *key) {
++  const EC_KEY *ec_key = key->pkey.ec;
++  int curve_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec_key));
++  if (curve_nid == NID_undef) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_NO_NID_FOR_CURVE);
+     return 0;
+   }
+-  /* restore old encoding flags */
+-  EC_KEY_set_enc_flags(ec_key, old_flags);
+ 
+-  if (!PKCS8_pkey_set0(p8, (ASN1_OBJECT *)OBJ_nid2obj(NID_X9_62_id_ecPublicKey),
+-                       0, ptype, pval, ep, eplen)) {
+-    OPENSSL_free(ep);
++  /* Omit the redundant copy of the curve name. This contradicts RFC 5915 but
++   * aligns with PKCS #11. SEC 1 only says they may be omitted if known by other
++   * means. Both OpenSSL and NSS omit the redundant parameters, so we omit them
++   * as well. */
++  unsigned enc_flags = EC_KEY_get_enc_flags(ec_key) | EC_PKEY_NO_PARAMETERS;
++
++  /* See RFC 5915. */
++  CBB pkcs8, algorithm, private_key;
++  if (!CBB_add_asn1(out, &pkcs8, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1_uint64(&pkcs8, 0 /* version */) ||
++      !CBB_add_asn1(&pkcs8, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !OBJ_nid2cbb(&algorithm, NID_X9_62_id_ecPublicKey) ||
++      !OBJ_nid2cbb(&algorithm, curve_nid) ||
++      !CBB_add_asn1(&pkcs8, &private_key, CBS_ASN1_OCTETSTRING) ||
++      !EC_KEY_marshal_private_key(&private_key, ec_key, enc_flags) ||
++      !CBB_flush(out)) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_ENCODE_ERROR);
+     return 0;
+   }
+ 
+@@ -446,21 +340,6 @@ err:
+   return ret;
+ }
+ 
+-static int eckey_param_decode(EVP_PKEY *pkey, const uint8_t **pder,
+-                              int derlen) {
+-  EC_KEY *eckey;
+-  if (!(eckey = d2i_ECParameters(NULL, pder, derlen))) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_EC_LIB);
+-    return 0;
+-  }
+-  EVP_PKEY_assign_EC_KEY(pkey, eckey);
+-  return 1;
+-}
+-
+-static int eckey_param_encode(const EVP_PKEY *pkey, uint8_t **pder) {
+-  return i2d_ECParameters(pkey->pkey.ec, pder);
+-}
+-
+ static int eckey_param_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+                              ASN1_PCTX *ctx) {
+   return do_EC_KEY_print(bp, pkey->pkey.ec, indent, 0);
+@@ -492,10 +371,6 @@ static int old_ec_priv_decode(EVP_PKEY *pkey, const uint8_t **pder,
+   return 1;
+ }
+ 
+-static int old_ec_priv_encode(const EVP_PKEY *pkey, uint8_t **pder) {
+-  return i2d_ECPrivateKey(pkey->pkey.ec, pder);
+-}
+-
+ const EVP_PKEY_ASN1_METHOD ec_asn1_meth = {
+   EVP_PKEY_EC,
+   0,
+@@ -516,8 +391,6 @@ const EVP_PKEY_ASN1_METHOD ec_asn1_meth = {
+   int_ec_size,
+   ec_bits,
+ 
+-  eckey_param_decode,
+-  eckey_param_encode,
+   ec_missing_parameters,
+   ec_copy_parameters,
+   ec_cmp_parameters,
+@@ -526,7 +399,6 @@ const EVP_PKEY_ASN1_METHOD ec_asn1_meth = {
+ 
+   int_ec_free,
+   old_ec_priv_decode,
+-  old_ec_priv_encode,
+ 
+   NULL /* digest_verify_init_from_algorithm */,
+   NULL /* digest_sign_algorithm */,
+diff --git a/crypto/evp/p_rsa_asn1.c b/crypto/evp/p_rsa_asn1.c
+index 70f0b763f..6848cc475 100644
+--- a/crypto/evp/p_rsa_asn1.c
++++ b/crypto/evp/p_rsa_asn1.c
+@@ -69,26 +69,33 @@
+ #include "internal.h"
+ 
+ 
+-static int rsa_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey) {
+-  uint8_t *encoded;
+-  size_t encoded_len;
+-  if (!RSA_public_key_to_bytes(&encoded, &encoded_len, pkey->pkey.rsa)) {
+-    return 0;
+-  }
+-
+-  if (!X509_PUBKEY_set0_param(pk, OBJ_nid2obj(EVP_PKEY_RSA), V_ASN1_NULL, NULL,
+-                              encoded, encoded_len)) {
+-    OPENSSL_free(encoded);
++static int rsa_pub_encode(CBB *out, const EVP_PKEY *key) {
++  /* See RFC 3279, section 2.3.1. */
++  CBB spki, algorithm, null, key_bitstring;
++  if (!CBB_add_asn1(out, &spki, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1(&spki, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !OBJ_nid2cbb(&algorithm, NID_rsaEncryption) ||
++      !CBB_add_asn1(&algorithm, &null, CBS_ASN1_NULL) ||
++      !CBB_add_asn1(&spki, &key_bitstring, CBS_ASN1_BITSTRING) ||
++      !CBB_add_u8(&key_bitstring, 0 /* padding */) ||
++      !RSA_marshal_public_key(&key_bitstring, key->pkey.rsa) ||
++      !CBB_flush(out)) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_ENCODE_ERROR);
+     return 0;
+   }
+ 
+   return 1;
+ }
+ 
+-static int rsa_pub_decode(EVP_PKEY *pkey, X509_PUBKEY *pubkey) {
+-  const uint8_t *p;
+-  int pklen;
+-  if (!X509_PUBKEY_get0_param(NULL, &p, &pklen, NULL, pubkey)) {
++static int rsa_pub_decode(EVP_PKEY *out, CBS *params, CBS *key) {
++  /* See RFC 3279, section 2.3.1. */
++
++  /* The parameters must be NULL. */
++  CBS null;
++  if (!CBS_get_asn1(params, &null, CBS_ASN1_NULL) ||
++      CBS_len(&null) != 0 ||
++      CBS_len(params) != 0) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+     return 0;
+   }
+ 
+@@ -98,16 +105,14 @@ static int rsa_pub_decode(EVP_PKEY *pkey, X509_PUBKEY *pubkey) {
+    * TODO(davidben): Switch this to the strict version in March 2016 or when
+    * Chromium can force client certificates down a different codepath, whichever
+    * comes first. */
+-  CBS cbs;
+-  CBS_init(&cbs, p, pklen);
+-  RSA *rsa = RSA_parse_public_key_buggy(&cbs);
+-  if (rsa == NULL || CBS_len(&cbs) != 0) {
++  RSA *rsa = RSA_parse_public_key_buggy(key);
++  if (rsa == NULL || CBS_len(key) != 0) {
+     OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+     RSA_free(rsa);
+     return 0;
+   }
+ 
+-  EVP_PKEY_assign_RSA(pkey, rsa);
++  EVP_PKEY_assign_RSA(out, rsa);
+   return 1;
+ }
+ 
+@@ -116,39 +121,41 @@ static int rsa_pub_cmp(const EVP_PKEY *a, const EVP_PKEY *b) {
+          BN_cmp(b->pkey.rsa->e, a->pkey.rsa->e) == 0;
+ }
+ 
+-static int rsa_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey) {
+-  uint8_t *encoded;
+-  size_t encoded_len;
+-  if (!RSA_private_key_to_bytes(&encoded, &encoded_len, pkey->pkey.rsa)) {
+-    return 0;
+-  }
+-
+-  /* TODO(fork): const correctness in next line. */
+-  if (!PKCS8_pkey_set0(p8, (ASN1_OBJECT *)OBJ_nid2obj(NID_rsaEncryption), 0,
+-                       V_ASN1_NULL, NULL, encoded, encoded_len)) {
+-    OPENSSL_free(encoded);
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
++static int rsa_priv_encode(CBB *out, const EVP_PKEY *key) {
++  CBB pkcs8, algorithm, null, private_key;
++  if (!CBB_add_asn1(out, &pkcs8, CBS_ASN1_SEQUENCE) ||
++      !CBB_add_asn1_uint64(&pkcs8, 0 /* version */) ||
++      !CBB_add_asn1(&pkcs8, &algorithm, CBS_ASN1_SEQUENCE) ||
++      !OBJ_nid2cbb(&algorithm, NID_rsaEncryption) ||
++      !CBB_add_asn1(&algorithm, &null, CBS_ASN1_NULL) ||
++      !CBB_add_asn1(&pkcs8, &private_key, CBS_ASN1_OCTETSTRING) ||
++      !RSA_marshal_private_key(&private_key, key->pkey.rsa) ||
++      !CBB_flush(out)) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_ENCODE_ERROR);
+     return 0;
+   }
+ 
+   return 1;
+ }
+ 
+-static int rsa_priv_decode(EVP_PKEY *pkey, PKCS8_PRIV_KEY_INFO *p8) {
+-  const uint8_t *p;
+-  int pklen;
+-  if (!PKCS8_pkey_get0(NULL, &p, &pklen, NULL, p8)) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_MALLOC_FAILURE);
++static int rsa_priv_decode(EVP_PKEY *out, CBS *params, CBS *key) {
++  /* Per RFC 3447, A.1, the parameters have type NULL. */
++  CBS null;
++  if (!CBS_get_asn1(params, &null, CBS_ASN1_NULL) ||
++      CBS_len(&null) != 0 ||
++      CBS_len(params) != 0) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
+     return 0;
+   }
+ 
+-  RSA *rsa = RSA_private_key_from_bytes(p, pklen);
+-  if (rsa == NULL) {
+-    OPENSSL_PUT_ERROR(EVP, ERR_R_RSA_LIB);
++  RSA *rsa = RSA_parse_private_key(key);
++  if (rsa == NULL || CBS_len(key) != 0) {
++    OPENSSL_PUT_ERROR(EVP, EVP_R_DECODE_ERROR);
++    RSA_free(rsa);
+     return 0;
+   }
+ 
+-  EVP_PKEY_assign_RSA(pkey, rsa);
++  EVP_PKEY_assign_RSA(out, rsa);
+   return 1;
+ }
+ 
+@@ -456,10 +463,6 @@ static int old_rsa_priv_decode(EVP_PKEY *pkey, const uint8_t **pder,
+   return 1;
+ }
+ 
+-static int old_rsa_priv_encode(const EVP_PKEY *pkey, uint8_t **pder) {
+-  return i2d_RSAPrivateKey(pkey->pkey.rsa, pder);
+-}
+-
+ /* allocate and set algorithm ID from EVP_MD, default SHA1 */
+ static int rsa_md_to_algor(X509_ALGOR **palg, const EVP_MD *md) {
+   if (EVP_MD_type(md) == NID_sha1) {
+@@ -723,13 +726,12 @@ const EVP_PKEY_ASN1_METHOD rsa_asn1_meth = {
+   int_rsa_size,
+   rsa_bits,
+ 
+-  0,0,0,0,0,0,
++  0,0,0,0,
+ 
+   rsa_sig_print,
+   int_rsa_free,
+ 
+   old_rsa_priv_decode,
+-  old_rsa_priv_encode,
+ 
+   rsa_digest_verify_init_from_algorithm,
+   rsa_digest_sign_algorithm,
+diff --git a/crypto/pem/pem_lib.c b/crypto/pem/pem_lib.c
+index 733d01597..deaf26abb 100644
+--- a/crypto/pem/pem_lib.c
++++ b/crypto/pem/pem_lib.c
+@@ -163,24 +163,6 @@ static int check_pem(const char *nm, const char *name)
+         return 0;
+     }
+ 
+-    if (!strcmp(name, PEM_STRING_PARAMETERS)) {
+-        int slen;
+-        const EVP_PKEY_ASN1_METHOD *ameth;
+-        slen = pem_check_suffix(nm, "PARAMETERS");
+-        if (slen > 0) {
+-            ENGINE *e;
+-            ameth = EVP_PKEY_asn1_find_str(&e, nm, slen);
+-            if (ameth) {
+-                int r;
+-                if (ameth->param_decode)
+-                    r = 1;
+-                else
+-                    r = 0;
+-                return r;
+-            }
+-        }
+-        return 0;
+-    }
+     /* Permit older strings */
+ 
+     if (!strcmp(nm, PEM_STRING_X509_OLD) && !strcmp(name, PEM_STRING_X509))
+diff --git a/crypto/pem/pem_pkey.c b/crypto/pem/pem_pkey.c
+index c60f22cc5..4cac7c288 100644
+--- a/crypto/pem/pem_pkey.c
++++ b/crypto/pem/pem_pkey.c
+@@ -160,78 +160,6 @@ int PEM_write_bio_PrivateKey(BIO *bp, EVP_PKEY *x, const EVP_CIPHER *enc,
+                               pem_str, bp, x, enc, kstr, klen, cb, u);
+ }
+ 
+-static int public_key_type_from_str(const char *name, size_t len)
+-{
+-    if (len == 3 && memcmp(name, "RSA", 3) == 0) {
+-        return EVP_PKEY_RSA;
+-    } else if (len == 2 && memcmp(name, "DH", 2) == 0) {
+-        return EVP_PKEY_DH;
+-    } else if (len == 2 && memcmp(name, "EC", 2) == 0) {
+-        return EVP_PKEY_EC;
+-    }
+-    return NID_undef;
+-}
+-
+-static int set_pkey_type_from_str(EVP_PKEY *pkey, const char *name,
+-                                  size_t len)
+-{
+-    int nid = public_key_type_from_str(name, len);
+-    if (nid == NID_undef) {
+-        return 0;
+-    }
+-    return EVP_PKEY_set_type(pkey, nid);
+-}
+-
+-EVP_PKEY *PEM_read_bio_Parameters(BIO *bp, EVP_PKEY **x)
+-{
+-    char *nm = NULL;
+-    const unsigned char *p = NULL;
+-    unsigned char *data = NULL;
+-    long len;
+-    int slen;
+-    EVP_PKEY *ret = NULL;
+-
+-    if (!PEM_bytes_read_bio(&data, &len, &nm, PEM_STRING_PARAMETERS,
+-                            bp, 0, NULL))
+-        return NULL;
+-    p = data;
+-
+-    if ((slen = pem_check_suffix(nm, "PARAMETERS")) > 0) {
+-        ret = EVP_PKEY_new();
+-        if (!ret)
+-            goto err;
+-        if (!set_pkey_type_from_str(ret, nm, slen)
+-            || !ret->ameth->param_decode
+-            || !ret->ameth->param_decode(ret, &p, len)) {
+-            EVP_PKEY_free(ret);
+-            ret = NULL;
+-            goto err;
+-        }
+-        if (x) {
+-            if (*x)
+-                EVP_PKEY_free((EVP_PKEY *)*x);
+-            *x = ret;
+-        }
+-    }
+- err:
+-    if (ret == NULL)
+-        OPENSSL_PUT_ERROR(PEM, ERR_R_ASN1_LIB);
+-    OPENSSL_free(nm);
+-    OPENSSL_free(data);
+-    return (ret);
+-}
+-
+-int PEM_write_bio_Parameters(BIO *bp, EVP_PKEY *x)
+-{
+-    char pem_str[80];
+-    if (!x->ameth || !x->ameth->param_encode)
+-        return 0;
+-
+-    BIO_snprintf(pem_str, 80, "%s PARAMETERS", x->ameth->pem_str);
+-    return PEM_ASN1_write_bio((i2d_of_void *)x->ameth->param_encode,
+-                              pem_str, bp, x, NULL, NULL, 0, 0, NULL);
+-}
+-
+ #ifndef OPENSSL_NO_FP_API
+ EVP_PKEY *PEM_read_PrivateKey(FILE *fp, EVP_PKEY **x, pem_password_cb *cb,
+                               void *u)
 diff --git a/crypto/pkcs8/pkcs8.c b/crypto/pkcs8/pkcs8.c
-index ac13faf7a..fdce544a0 100644
+index ac13faf7a..175a88552 100644
 --- a/crypto/pkcs8/pkcs8.c
 +++ b/crypto/pkcs8/pkcs8.c
-@@ -737,6 +737,7 @@ static int PKCS12_handle_content_info(CBS *content_info, unsigned depth,
+@@ -62,6 +62,7 @@
+ #include <openssl/asn1.h>
+ #include <openssl/bn.h>
+ #include <openssl/buf.h>
++#include <openssl/bytestring.h>
+ #include <openssl/cipher.h>
+ #include <openssl/digest.h>
+ #include <openssl/err.h>
+@@ -71,7 +72,6 @@
+ 
+ #include "internal.h"
+ #include "../bytestring/internal.h"
+-#include "../evp/internal.h"
+ 
+ 
+ #define PKCS12_KEY_ID 1
+@@ -591,72 +591,52 @@ err:
+ }
+ 
+ EVP_PKEY *EVP_PKCS82PKEY(PKCS8_PRIV_KEY_INFO *p8) {
+-  EVP_PKEY *pkey = NULL;
+-  ASN1_OBJECT *algoid;
+-  char obj_tmp[80];
+-
+-  if (!PKCS8_pkey_get0(&algoid, NULL, NULL, NULL, p8)) {
++  uint8_t *der = NULL;
++  int der_len = i2d_PKCS8_PRIV_KEY_INFO(p8, &der);
++  if (der_len < 0) {
+     return NULL;
+   }
+ 
+-  pkey = EVP_PKEY_new();
+-  if (pkey == NULL) {
+-    OPENSSL_PUT_ERROR(PKCS8, ERR_R_MALLOC_FAILURE);
++  CBS cbs;
++  CBS_init(&cbs, der, (size_t)der_len);
++  EVP_PKEY *ret = EVP_parse_private_key(&cbs);
++  if (ret == NULL || CBS_len(&cbs) != 0) {
++    OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_DECODE_ERROR);
++    EVP_PKEY_free(ret);
++    OPENSSL_free(der);
+     return NULL;
+   }
+ 
+-  if (!EVP_PKEY_set_type(pkey, OBJ_obj2nid(algoid))) {
+-    OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_UNSUPPORTED_PRIVATE_KEY_ALGORITHM);
+-    i2t_ASN1_OBJECT(obj_tmp, 80, algoid);
+-    ERR_add_error_data(2, "TYPE=", obj_tmp);
+-    goto error;
+-  }
+-
+-  if (pkey->ameth->priv_decode) {
+-    if (!pkey->ameth->priv_decode(pkey, p8)) {
+-      OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_PRIVATE_KEY_DECODE_ERROR);
+-      goto error;
+-    }
+-  } else {
+-    OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_METHOD_NOT_SUPPORTED);
+-    goto error;
+-  }
+-
+-  return pkey;
+-
+-error:
+-  EVP_PKEY_free(pkey);
+-  return NULL;
++  OPENSSL_free(der);
++  return ret;
+ }
+ 
+ PKCS8_PRIV_KEY_INFO *EVP_PKEY2PKCS8(EVP_PKEY *pkey) {
+-  PKCS8_PRIV_KEY_INFO *p8;
+-
+-  p8 = PKCS8_PRIV_KEY_INFO_new();
+-  if (p8 == NULL) {
+-    OPENSSL_PUT_ERROR(PKCS8, ERR_R_MALLOC_FAILURE);
+-    return NULL;
++  CBB cbb;
++  uint8_t *der = NULL;
++  size_t der_len;
++  if (!CBB_init(&cbb, 0) ||
++      !EVP_marshal_private_key(&cbb, pkey) ||
++      !CBB_finish(&cbb, &der, &der_len) ||
++      der_len > LONG_MAX) {
++    CBB_cleanup(&cbb);
++    OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_ENCODE_ERROR);
++    goto err;
+   }
+-  p8->broken = PKCS8_OK;
+ 
+-  if (pkey->ameth) {
+-    if (pkey->ameth->priv_encode) {
+-      if (!pkey->ameth->priv_encode(p8, pkey)) {
+-        OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_PRIVATE_KEY_ENCODE_ERROR);
+-        goto error;
+-      }
+-    } else {
+-      OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_METHOD_NOT_SUPPORTED);
+-      goto error;
+-    }
+-  } else {
+-    OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_UNSUPPORTED_PRIVATE_KEY_ALGORITHM);
+-    goto error;
++  const uint8_t *p = der;
++  PKCS8_PRIV_KEY_INFO *p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, (long)der_len);
++  if (p8 == NULL || p != der + der_len) {
++    PKCS8_PRIV_KEY_INFO_free(p8);
++    OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_DECODE_ERROR);
++    goto err;
+   }
++
++  OPENSSL_free(der);
+   return p8;
+ 
+-error:
+-  PKCS8_PRIV_KEY_INFO_free(p8);
++err:
++  OPENSSL_free(der);
+   return NULL;
+ }
+ 
+@@ -737,6 +717,7 @@ static int PKCS12_handle_content_info(CBS *content_info, unsigned depth,
                                        struct pkcs12_context *ctx) {
    CBS content_type, wrapped_contents, contents, content_infos;
    int nid, ret = 0;
@@ -583,7 +3906,7 @@ index ac13faf7a..fdce544a0 100644
  
    if (!CBS_get_asn1(content_info, &content_type, CBS_ASN1_OBJECT) ||
        !CBS_get_asn1(content_info, &wrapped_contents,
-@@ -767,8 +768,9 @@ static int PKCS12_handle_content_info(CBS *content_info, unsigned depth,
+@@ -767,8 +748,9 @@ static int PKCS12_handle_content_info(CBS *content_info, unsigned depth,
          /* AlgorithmIdentifier, see
           * https://tools.ietf.org/html/rfc5280#section-4.1.1.2 */
          !CBS_get_asn1_element(&eci, &ai, CBS_ASN1_SEQUENCE) ||
@@ -595,7 +3918,7 @@ index ac13faf7a..fdce544a0 100644
        OPENSSL_PUT_ERROR(PKCS8, PKCS8_R_BAD_PKCS12_DATA);
        goto err;
      }
-@@ -895,6 +897,7 @@ static int PKCS12_handle_content_info(CBS *content_info, unsigned depth,
+@@ -895,6 +877,7 @@ static int PKCS12_handle_content_info(CBS *content_info, unsigned depth,
    }
  
  err:
@@ -604,7 +3927,7 @@ index ac13faf7a..fdce544a0 100644
  }
  
 diff --git a/crypto/rsa/rsa_asn1.c b/crypto/rsa/rsa_asn1.c
-index 2970717f3..83bae4d5d 100644
+index 2970717f3..1f3d6a244 100644
 --- a/crypto/rsa/rsa_asn1.c
 +++ b/crypto/rsa/rsa_asn1.c
 @@ -67,6 +67,7 @@
@@ -615,7 +3938,22 @@ index 2970717f3..83bae4d5d 100644
  
  
  static int parse_integer_buggy(CBS *cbs, BIGNUM **out, int buggy) {
-@@ -379,32 +380,17 @@ RSA *d2i_RSAPublicKey(RSA **out, const uint8_t **inp, long len) {
+@@ -232,9 +233,11 @@ RSA *RSA_parse_private_key(CBS *cbs) {
+     goto err;
+   }
+ 
+-  /* Multi-prime RSA requires a newer version. */
+-  if (version == kVersionMulti &&
+-      CBS_peek_asn1_tag(&child, CBS_ASN1_SEQUENCE)) {
++  if (version == kVersionMulti) {
++    /* Although otherPrimeInfos is written as OPTIONAL in RFC 3447, it later
++     * says "[otherPrimeInfos] shall be omitted if version is 0 and shall
++     * contain at least one instance of OtherPrimeInfo if version is 1." The
++     * OPTIONAL is just so both versions share a single definition. */
+     CBS other_prime_infos;
+     if (!CBS_get_asn1(&child, &other_prime_infos, CBS_ASN1_SEQUENCE) ||
+         CBS_len(&other_prime_infos) == 0) {
+@@ -379,32 +382,17 @@ RSA *d2i_RSAPublicKey(RSA **out, const uint8_t **inp, long len) {
      RSA_free(*out);
      *out = ret;
    }
@@ -653,7 +3991,7 @@ index 2970717f3..83bae4d5d 100644
  }
  
  RSA *d2i_RSAPrivateKey(RSA **out, const uint8_t **inp, long len) {
-@@ -421,32 +407,17 @@ RSA *d2i_RSAPrivateKey(RSA **out, const uint8_t **inp, long len) {
+@@ -421,32 +409,17 @@ RSA *d2i_RSAPrivateKey(RSA **out, const uint8_t **inp, long len) {
      RSA_free(*out);
      *out = ret;
    }
@@ -691,6 +4029,389 @@ index 2970717f3..83bae4d5d 100644
  }
  
  ASN1_SEQUENCE(RSA_PSS_PARAMS) = {
+diff --git a/crypto/test/file_test.cc b/crypto/test/file_test.cc
+index 4752f04a3..d0447c344 100644
+--- a/crypto/test/file_test.cc
++++ b/crypto/test/file_test.cc
+@@ -63,30 +63,21 @@ static std::string StripSpace(const char *str, size_t len) {
+ }
+ 
+ FileTest::ReadResult FileTest::ReadNext() {
+-  // If the previous test had unused attributes or block, it is an error.
++  // If the previous test had unused attributes, it is an error.
+   if (!unused_attributes_.empty()) {
+     for (const std::string &key : unused_attributes_) {
+       PrintLine("Unused attribute: %s", key.c_str());
+     }
+     return kReadError;
+   }
+-  if (!block_.empty() && !used_block_) {
+-    PrintLine("Unused block");
+-    return kReadError;
+-  }
+ 
+   ClearTest();
+ 
+-  bool in_block = false;
+   while (true) {
+     // Read the next line.
+     char buf[4096];
+     if (fgets(buf, sizeof(buf), file_) == nullptr) {
+       if (feof(file_)) {
+-        if (in_block) {
+-          fprintf(stderr, "Unterminated block.\n");
+-          return kReadError;
+-        }
+         // EOF is a valid terminator for a test.
+         return start_line_ > 0 ? kReadSuccess : kReadEOF;
+       }
+@@ -102,21 +93,7 @@ FileTest::ReadResult FileTest::ReadNext() {
+       return kReadError;
+     }
+ 
+-    bool is_delimiter = strncmp(buf, "---", 3) == 0;
+-    if (in_block) {
+-      block_ += buf;
+-      if (is_delimiter) {
+-        // Ending the block completes the test.
+-        return kReadSuccess;
+-      }
+-    } else if (is_delimiter) {
+-      if (start_line_ == 0) {
+-        fprintf(stderr, "Line %u: Unexpected block.\n", line_);
+-        return kReadError;
+-      }
+-      in_block = true;
+-      block_ += buf;
+-    } else if (buf[0] == '\n' || buf[0] == '\0') {
++    if (buf[0] == '\n' || buf[0] == '\0') {
+       // Empty lines delimit tests.
+       if (start_line_ > 0) {
+         return kReadSuccess;
+@@ -165,11 +142,6 @@ const std::string &FileTest::GetParameter() {
+   return parameter_;
+ }
+ 
+-const std::string &FileTest::GetBlock() {
+-  used_block_ = true;
+-  return block_;
+-}
+-
+ bool FileTest::HasAttribute(const std::string &key) {
+   OnKeyUsed(key);
+   return attributes_.count(key) > 0;
+@@ -224,6 +196,7 @@ bool FileTest::GetBytes(std::vector<uint8_t> *out, const std::string &key) {
+     PrintLine("Error decoding value: %s", value.c_str());
+     return false;
+   }
++  out->clear();
+   out->reserve(value.size() / 2);
+   for (size_t i = 0; i < value.size(); i += 2) {
+     uint8_t hi, lo;
+@@ -266,9 +239,7 @@ void FileTest::ClearTest() {
+   type_.clear();
+   parameter_.clear();
+   attributes_.clear();
+-  block_.clear();
+   unused_attributes_.clear();
+-  used_block_ = false;
+ }
+ 
+ void FileTest::OnKeyUsed(const std::string &key) {
+@@ -304,6 +275,7 @@ int FileTestMain(bool (*run_test)(FileTest *t, void *arg), void *arg,
+                      t.GetAttributeOrDie("Error").c_str(),
+                      ERR_reason_error_string(err));
+         failed = true;
++        ERR_clear_error();
+         continue;
+       }
+       ERR_clear_error();
+diff --git a/crypto/test/file_test.h b/crypto/test/file_test.h
+index 8fb7ed22b..e90cc86ad 100644
+--- a/crypto/test/file_test.h
++++ b/crypto/test/file_test.h
+@@ -38,7 +38,7 @@
+ //
+ // This module provides a file-based test framework. The file format is based on
+ // that of OpenSSL upstream's evp_test and BoringSSL's aead_test. Each input
+-// file is a sequence of attributes, blocks, and blank lines.
++// file is a sequence of attributes and blank lines.
+ //
+ // Each attribute has the form:
+ //
+@@ -47,15 +47,11 @@
+ // Either '=' or ':' may be used to delimit the name from the value. Both the
+ // name and value have leading and trailing spaces stripped.
+ //
+-// Blocks are delimited by lines beginning with three hyphens, "---". One such
+-// line begins a block and another ends it. Blocks are intended as a convenient
+-// way to embed PEM data and include their delimiters.
++// Lines beginning with # are ignored.
+ //
+-// Outside a block, lines beginning with # are ignored.
+-//
+-// A test is a sequence of one or more attributes followed by a block or blank
+-// line. Blank lines are otherwise ignored. For tests that process multiple
+-// kinds of test cases, the first attribute is parsed out as the test's type and
++// A test is a sequence of one or more attributes followed by a blank line.
++// Blank lines are otherwise ignored. For tests that process multiple kinds of
++// test cases, the first attribute is parsed out as the test's type and
+ // parameter. Otherwise, attributes are unordered. The first attribute is also
+ // included in the set of attributes, so tests which do not dispatch may ignore
+ // this mechanism.
+@@ -98,9 +94,6 @@ class FileTest {
+   const std::string &GetType();
+   // GetParameter returns the value of the first attribute of the current test.
+   const std::string &GetParameter();
+-  // GetBlock returns the optional block of the current test, or the empty
+-  // if there was no block.
+-  const std::string &GetBlock();
+ 
+   // HasAttribute returns true if the current test has an attribute named |key|.
+   bool HasAttribute(const std::string &key);
+@@ -111,7 +104,7 @@ class FileTest {
+   bool GetAttribute(std::string *out_value, const std::string &key);
+ 
+   // GetAttributeOrDie looks up the attribute with key |key| and aborts if it is
+-  // missing. It only be used after a |HasAttribute| call.
++  // missing. It should only be used after a |HasAttribute| call.
+   const std::string &GetAttributeOrDie(const std::string &key);
+ 
+   // GetBytes looks up the attribute with key |key| and decodes it as a byte
+@@ -142,13 +135,9 @@ class FileTest {
+   std::string parameter_;
+   // attributes_ contains all attributes in the test, including the first.
+   std::map<std::string, std::string> attributes_;
+-  // block_, if non-empty, is the test's optional trailing block.
+-  std::string block_;
+ 
+   // unused_attributes_ is the set of attributes that have been queried.
+   std::set<std::string> unused_attributes_;
+-  // used_block_ is true if the block has been queried.
+-  bool used_block_ = false;
+ 
+   FileTest(const FileTest&) = delete;
+   FileTest &operator=(const FileTest&) = delete;
+diff --git a/crypto/x509/i2d_pr.c b/crypto/x509/i2d_pr.c
+index 7504f2d40..c3fb8a8a6 100644
+--- a/crypto/x509/i2d_pr.c
++++ b/crypto/x509/i2d_pr.c
+@@ -55,29 +55,29 @@
+  * copied and put under another distribution licence
+  * [including the GNU Public Licence.] */
+ 
+-#include <openssl/x509.h>
+-
+ #include <openssl/asn1.h>
++#include <openssl/ec_key.h>
+ #include <openssl/err.h>
+ #include <openssl/evp.h>
++#include <openssl/rsa.h>
++#include <openssl/dsa.h>
+ 
+-#include "../evp/internal.h"
+ 
+-int i2d_PrivateKey(const EVP_PKEY *a, unsigned char **pp)
++int i2d_PrivateKey(const EVP_PKEY *a, uint8_t **pp)
+ {
+-    if (a->ameth && a->ameth->old_priv_encode) {
+-        return a->ameth->old_priv_encode(a, pp);
+-    }
+-    if (a->ameth && a->ameth->priv_encode) {
+-        PKCS8_PRIV_KEY_INFO *p8 = EVP_PKEY2PKCS8((EVP_PKEY *)a);
+-        int ret = i2d_PKCS8_PRIV_KEY_INFO(p8, pp);
+-        PKCS8_PRIV_KEY_INFO_free(p8);
+-        return ret;
++    switch (EVP_PKEY_id(a)) {
++    case EVP_PKEY_RSA:
++        return i2d_RSAPrivateKey(a->pkey.rsa, pp);
++    case EVP_PKEY_EC:
++        return i2d_ECPrivateKey(a->pkey.ec, pp);
++    case EVP_PKEY_DSA:
++        return i2d_DSAPrivateKey(a->pkey.dsa, pp);
++    default:
++        /*
++         * Although this file is in crypto/x509 for layering reasons, it emits
++         * an error code from ASN1 for OpenSSL compatibility.
++         */
++        OPENSSL_PUT_ERROR(ASN1, ASN1_R_UNSUPPORTED_PUBLIC_KEY_TYPE);
++        return -1;
+     }
+-    /*
+-     * Although this file is in crypto/x509 for layering reasons, it emits an
+-     * error code from ASN1 for OpenSSL compatibility.
+-     */
+-    OPENSSL_PUT_ERROR(ASN1, ASN1_R_UNSUPPORTED_PUBLIC_KEY_TYPE);
+-    return -1;
+ }
+diff --git a/crypto/x509/x_pubkey.c b/crypto/x509/x_pubkey.c
+index e8732a116..47f256c76 100644
+--- a/crypto/x509/x_pubkey.c
++++ b/crypto/x509/x_pubkey.c
+@@ -54,8 +54,11 @@
+  * copied and put under another distribution licence
+  * [including the GNU Public Licence.] */
+ 
++#include <limits.h>
++
+ #include <openssl/asn1.h>
+ #include <openssl/asn1t.h>
++#include <openssl/bytestring.h>
+ #include <openssl/err.h>
+ #include <openssl/evp.h>
+ #include <openssl/mem.h>
+@@ -63,7 +66,6 @@
+ #include <openssl/thread.h>
+ #include <openssl/x509.h>
+ 
+-#include "../evp/internal.h"
+ #include "../internal.h"
+ 
+ /* Minor tweak to operation: free up EVP_PKEY */
+@@ -87,51 +89,50 @@ IMPLEMENT_ASN1_FUNCTIONS(X509_PUBKEY)
+ int X509_PUBKEY_set(X509_PUBKEY **x, EVP_PKEY *pkey)
+ {
+     X509_PUBKEY *pk = NULL;
++    uint8_t *spki = NULL;
++    size_t spki_len;
+ 
+     if (x == NULL)
+         return (0);
+ 
+-    if ((pk = X509_PUBKEY_new()) == NULL)
++    CBB cbb;
++    if (!CBB_init(&cbb, 0) ||
++        !EVP_marshal_public_key(&cbb, pkey) ||
++        !CBB_finish(&cbb, &spki, &spki_len) ||
++        spki_len > LONG_MAX) {
++        CBB_cleanup(&cbb);
++        OPENSSL_PUT_ERROR(X509, X509_R_PUBLIC_KEY_ENCODE_ERROR);
+         goto error;
++    }
+ 
+-    if (pkey->ameth) {
+-        if (pkey->ameth->pub_encode) {
+-            if (!pkey->ameth->pub_encode(pk, pkey)) {
+-                OPENSSL_PUT_ERROR(X509, X509_R_PUBLIC_KEY_ENCODE_ERROR);
+-                goto error;
+-            }
+-        } else {
+-            OPENSSL_PUT_ERROR(X509, X509_R_METHOD_NOT_SUPPORTED);
+-            goto error;
+-        }
+-    } else {
+-        OPENSSL_PUT_ERROR(X509, X509_R_UNSUPPORTED_ALGORITHM);
++    const uint8_t *p = spki;
++    pk = d2i_X509_PUBKEY(NULL, &p, (long)spki_len);
++    if (pk == NULL || p != spki + spki_len) {
++        OPENSSL_PUT_ERROR(X509, X509_R_PUBLIC_KEY_DECODE_ERROR);
+         goto error;
+     }
+ 
+-    if (*x != NULL)
+-        X509_PUBKEY_free(*x);
+-
++    OPENSSL_free(spki);
++    X509_PUBKEY_free(*x);
+     *x = pk;
+ 
+     return 1;
+  error:
+-    if (pk != NULL)
+-        X509_PUBKEY_free(pk);
++    X509_PUBKEY_free(pk);
++    OPENSSL_free(spki);
+     return 0;
+ }
+ 
+-/*
+- * g_pubkey_lock is used to protect the initialisation of the |pkey| member
+- * of |X509_PUBKEY| objects. Really |X509_PUBKEY| should have a
+- * |CRYPTO_once_t| inside it for this, but |CRYPTO_once_t| is private and
+- * |X509_PUBKEY| is not.
+- */
++/* g_pubkey_lock is used to protect the initialisation of the |pkey| member of
++ * |X509_PUBKEY| objects. Really |X509_PUBKEY| should have a |CRYPTO_once_t|
++ * inside it for this, but |CRYPTO_once_t| is private and |X509_PUBKEY| is
++ * not. */
+ static struct CRYPTO_STATIC_MUTEX g_pubkey_lock = CRYPTO_STATIC_MUTEX_INIT;
+ 
+ EVP_PKEY *X509_PUBKEY_get(X509_PUBKEY *key)
+ {
+     EVP_PKEY *ret = NULL;
++    uint8_t *spki = NULL;
+ 
+     if (key == NULL)
+         goto error;
+@@ -143,26 +144,16 @@ EVP_PKEY *X509_PUBKEY_get(X509_PUBKEY *key)
+     }
+     CRYPTO_STATIC_MUTEX_unlock(&g_pubkey_lock);
+ 
+-    if (key->public_key == NULL)
+-        goto error;
+-
+-    if ((ret = EVP_PKEY_new()) == NULL) {
+-        OPENSSL_PUT_ERROR(X509, ERR_R_MALLOC_FAILURE);
++    /* Re-encode the |X509_PUBKEY| to DER and parse it. */
++    int spki_len = i2d_X509_PUBKEY(key, &spki);
++    if (spki_len < 0) {
+         goto error;
+     }
+-
+-    if (!EVP_PKEY_set_type(ret, OBJ_obj2nid(key->algor->algorithm))) {
+-        OPENSSL_PUT_ERROR(X509, X509_R_UNSUPPORTED_ALGORITHM);
+-        goto error;
+-    }
+-
+-    if (ret->ameth->pub_decode) {
+-        if (!ret->ameth->pub_decode(ret, key)) {
+-            OPENSSL_PUT_ERROR(X509, X509_R_PUBLIC_KEY_DECODE_ERROR);
+-            goto error;
+-        }
+-    } else {
+-        OPENSSL_PUT_ERROR(X509, X509_R_METHOD_NOT_SUPPORTED);
++    CBS cbs;
++    CBS_init(&cbs, spki, (size_t)spki_len);
++    ret = EVP_parse_public_key(&cbs);
++    if (ret == NULL || CBS_len(&cbs) != 0) {
++        OPENSSL_PUT_ERROR(X509, X509_R_PUBLIC_KEY_DECODE_ERROR);
+         goto error;
+     }
+ 
+@@ -177,12 +168,13 @@ EVP_PKEY *X509_PUBKEY_get(X509_PUBKEY *key)
+         CRYPTO_STATIC_MUTEX_unlock(&g_pubkey_lock);
+     }
+ 
++    OPENSSL_free(spki);
+     return EVP_PKEY_up_ref(ret);
+ 
+  error:
+-    if (ret != NULL)
+-        EVP_PKEY_free(ret);
+-    return (NULL);
++    OPENSSL_free(spki);
++    EVP_PKEY_free(ret);
++    return NULL;
+ }
+ 
+ /*
+diff --git a/fuzz/cert.cc b/fuzz/cert.cc
+index ad40a3190..4078c0ec2 100644
+--- a/fuzz/cert.cc
++++ b/fuzz/cert.cc
+@@ -2,6 +2,11 @@
+ 
+ extern "C" int LLVMFuzzerTestOneInput(uint8_t *buf, size_t len) {
+   const uint8_t *bufp = buf;
+-  X509_free(d2i_X509(NULL, &bufp, len));
++  X509 *x509 = d2i_X509(NULL, &bufp, len);
++  if (x509 != NULL) {
++    /* Also extract the public key. */
++    EVP_PKEY_free(X509_get_pubkey(x509));
++  }
++  X509_free(x509);
+   return 0;
+ }
 diff --git a/include/openssl/bytestring.h b/include/openssl/bytestring.h
 index 9193e11fd..cf424d071 100644
 --- a/include/openssl/bytestring.h
@@ -714,11 +4435,616 @@ index 9193e11fd..cf424d071 100644
  
  #define CBS_ASN1_CONSTRUCTED 0x20
  #define CBS_ASN1_CONTEXT_SPECIFIC 0x80
+diff --git a/include/openssl/dsa.h b/include/openssl/dsa.h
+index 1cf8489d5..8cf008b66 100644
+--- a/include/openssl/dsa.h
++++ b/include/openssl/dsa.h
+@@ -218,66 +218,41 @@ OPENSSL_EXPORT int DSA_size(const DSA *dsa);
+ 
+ /* ASN.1 encoding. */
+ 
+-/* d2i_DSA_SIG parses an ASN.1, DER-encoded, DSA signature from |len| bytes at
+- * |*inp|. If |out_sig| is not NULL then, on exit, a pointer to the result is
+- * in |*out_sig|. If |*out_sig| is already non-NULL on entry then the result is
+- * written directly into |*out_sig|, otherwise a fresh |DSA_SIG| is allocated.
+- * However, one should not depend on writing into |*out_sig| because this
+- * behaviour is likely to change in the future. On successful exit, |*inp| is
+- * advanced past the DER structure. It returns the result or NULL on error. */
+-OPENSSL_EXPORT DSA_SIG *d2i_DSA_SIG(DSA_SIG **out_sig, const uint8_t **inp,
+-                                    long len);
+-
+-/* i2d_DSA_SIG marshals |in| to an ASN.1, DER structure. If |outp| is not NULL
+- * then the result is written to |*outp| and |*outp| is advanced just past the
+- * output. It returns the number of bytes in the result, whether written or not,
+- * or a negative value on error. */
+-OPENSSL_EXPORT int i2d_DSA_SIG(const DSA_SIG *in, uint8_t **outp);
+-
+-/* d2i_DSAPublicKey parses an ASN.1, DER-encoded, DSA public key from |len|
+- * bytes at |*inp|. If |out| is not NULL then, on exit, a pointer to the result
+- * is in |*out|. If |*out| is already non-NULL on entry then the result is
+- * written directly into |*out|, otherwise a fresh |DSA| is allocated.
+- * However, one should not depend on writing into |*out| because this behaviour
+- * is likely to change in the future. On successful exit, |*inp| is advanced
+- * past the DER structure. It returns the result or NULL on error. */
+-OPENSSL_EXPORT DSA *d2i_DSAPublicKey(DSA **out, const uint8_t **inp, long len);
+-
+-/* i2d_DSAPublicKey marshals a public key from |in| to an ASN.1, DER structure.
+- * If |outp| is not NULL then the result is written to |*outp| and |*outp| is
+- * advanced just past the output. It returns the number of bytes in the result,
+- * whether written or not, or a negative value on error. */
+-OPENSSL_EXPORT int i2d_DSAPublicKey(const DSA *in, unsigned char **outp);
+-
+-/* d2i_DSAPrivateKey parses an ASN.1, DER-encoded, DSA private key from |len|
+- * bytes at |*inp|. If |out| is not NULL then, on exit, a pointer to the result
+- * is in |*out|. If |*out| is already non-NULL on entry then the result is
+- * written directly into |*out|, otherwise a fresh |DSA| is allocated. However,
+- * one should not depend on writing into |*out| because this behaviour is
+- * likely to change in the future. On successful exit, |*inp| is advanced past
+- * the DER structure. It returns the result or NULL on error. */
+-OPENSSL_EXPORT DSA *d2i_DSAPrivateKey(DSA **out, const uint8_t **inp, long len);
++/* DSA_SIG_parse parses a DER-encoded DSA-Sig-Value structure from |cbs| and
++ * advances |cbs|. It returns a newly-allocated |DSA_SIG| or NULL on error. */
++OPENSSL_EXPORT DSA_SIG *DSA_SIG_parse(CBS *cbs);
++
++/* DSA_SIG_marshal marshals |sig| as a DER-encoded DSA-Sig-Value and appends the
++ * result to |cbb|. It returns one on success and zero on error. */
++OPENSSL_EXPORT int DSA_SIG_marshal(CBB *cbb, const DSA_SIG *sig);
++
++/* DSA_parse_public_key parses a DER-encoded DSA public key from |cbs| and
++ * advances |cbs|. It returns a newly-allocated |DSA| or NULL on error. */
++OPENSSL_EXPORT DSA *DSA_parse_public_key(CBS *cbs);
++
++/* DSA_marshal_public_key marshals |dsa| as a DER-encoded DSA public key and
++ * appends the result to |cbb|. It returns one on success and zero on
++ * failure. */
++OPENSSL_EXPORT int DSA_marshal_public_key(CBB *cbb, const DSA *dsa);
++
++/* DSA_parse_private_key parses a DER-encoded DSA private key from |cbs| and
++ * advances |cbs|. It returns a newly-allocated |DSA| or NULL on error. */
++OPENSSL_EXPORT DSA *DSA_parse_private_key(CBS *cbs);
++
++/* DSA_marshal_private_key marshals |dsa| as a DER-encoded DSA private key and
++ * appends the result to |cbb|. It returns one on success and zero on
++ * failure. */
++OPENSSL_EXPORT int DSA_marshal_private_key(CBB *cbb, const DSA *dsa);
++
++/* DSA_parse_parameters parses a DER-encoded Dss-Parms structure (RFC 3279)
++ * from |cbs| and advances |cbs|. It returns a newly-allocated |DSA| or NULL on
++ * error. */
++OPENSSL_EXPORT DSA *DSA_parse_parameters(CBS *cbs);
+ 
+-/* i2d_DSAPrivateKey marshals a private key from |in| to an ASN.1, DER structure.
+- * If |outp| is not NULL then the result is written to |*outp| and |*outp| is
+- * advanced just past the output. It returns the number of bytes in the result,
+- * whether written or not, or a negative value on error. */
+-OPENSSL_EXPORT int i2d_DSAPrivateKey(const DSA *in, unsigned char **outp);
+-
+-/* d2i_DSAparams parses ASN.1, DER-encoded, DSA parameters from |len| bytes at
+- * |*inp|. If |out| is not NULL then, on exit, a pointer to the result is in
+- * |*out|. If |*out| is already non-NULL on entry then the result is written
+- * directly into |*out|, otherwise a fresh |DSA| is allocated. However, one
+- * should not depend on writing into |*out| because this behaviour is likely to
+- * change in the future. On successful exit, |*inp| is advanced past the DER
+- * structure. It returns the result or NULL on error. */
+-OPENSSL_EXPORT DSA *d2i_DSAparams(DSA **out, const uint8_t **inp, long len);
+-
+-/* i2d_DSAparams marshals DSA parameters from |in| to an ASN.1, DER structure.
+- * If |outp| is not NULL then the result is written to |*outp| and |*outp| is
+- * advanced just past the output. It returns the number of bytes in the result,
+- * whether written or not, or a negative value on error. */
+-OPENSSL_EXPORT int i2d_DSAparams(const DSA *in, unsigned char **outp);
++/* DSA_marshal_parameters marshals |dsa| as a DER-encoded Dss-Parms structure
++ * (RFC 3447) and appends the result to |cbb|. It returns one on success and
++ * zero on failure. */
++OPENSSL_EXPORT int DSA_marshal_parameters(CBB *cbb, const DSA *dsa);
+ 
+ 
+ /* Precomputation. */
+@@ -313,9 +288,84 @@ OPENSSL_EXPORT int DSA_set_ex_data(DSA *d, int idx, void *arg);
+ OPENSSL_EXPORT void *DSA_get_ex_data(const DSA *d, int idx);
+ 
+ 
++/* Deprecated functions. */
++
++/* d2i_DSA_SIG parses an ASN.1, DER-encoded, DSA signature from |len| bytes at
++ * |*inp|. If |out_sig| is not NULL then, on exit, a pointer to the result is
++ * in |*out_sig|. Note that, even if |*out_sig| is already non-NULL on entry, it
++ * will not be written to. Rather, a fresh |DSA_SIG| is allocated and the
++ * previous one is freed. On successful exit, |*inp| is advanced past the DER
++ * structure. It returns the result or NULL on error.
++ *
++ * Use |DSA_SIG_parse| instead. */
++OPENSSL_EXPORT DSA_SIG *d2i_DSA_SIG(DSA_SIG **out_sig, const uint8_t **inp,
++                                    long len);
++
++/* i2d_DSA_SIG marshals |in| to an ASN.1, DER structure. If |outp| is not NULL
++ * then the result is written to |*outp| and |*outp| is advanced just past the
++ * output. It returns the number of bytes in the result, whether written or not,
++ * or a negative value on error.
++ *
++ * Use |DSA_SIG_marshal| instead. */
++OPENSSL_EXPORT int i2d_DSA_SIG(const DSA_SIG *in, uint8_t **outp);
++
++/* d2i_DSAPublicKey parses an ASN.1, DER-encoded, DSA public key from |len|
++ * bytes at |*inp|. If |out| is not NULL then, on exit, a pointer to the result
++ * is in |*out|. Note that, even if |*ou| is already non-NULL on entry, it will
++ * not be written to. Rather, a fresh |DSA| is allocated and the previous one is
++ * freed. On successful exit, |*inp| is advanced past the DER structure. It
++ * returns the result or NULL on error.
++ *
++ * Use |DSA_parse_public_key| instead. */
++OPENSSL_EXPORT DSA *d2i_DSAPublicKey(DSA **out, const uint8_t **inp, long len);
++
++/* i2d_DSAPublicKey marshals a public key from |in| to an ASN.1, DER structure.
++ * If |outp| is not NULL then the result is written to |*outp| and |*outp| is
++ * advanced just past the output. It returns the number of bytes in the result,
++ * whether written or not, or a negative value on error.
++ *
++ * Use |DSA_marshal_public_key| instead. */
++OPENSSL_EXPORT int i2d_DSAPublicKey(const DSA *in, uint8_t **outp);
++
++/* d2i_DSAPrivateKey parses an ASN.1, DER-encoded, DSA private key from |len|
++ * bytes at |*inp|. If |out| is not NULL then, on exit, a pointer to the result
++ * is in |*out|. Note that, even if |*out| is already non-NULL on entry, it will
++ * not be written to. Rather, a fresh |DSA| is allocated and the previous one is
++ * freed. On successful exit, |*inp| is advanced past the DER structure. It
++ * returns the result or NULL on error.
++ *
++ * Use |DSA_parse_private_key| instead. */
++OPENSSL_EXPORT DSA *d2i_DSAPrivateKey(DSA **out, const uint8_t **inp, long len);
++
++/* i2d_DSAPrivateKey marshals a private key from |in| to an ASN.1, DER structure.
++ * If |outp| is not NULL then the result is written to |*outp| and |*outp| is
++ * advanced just past the output. It returns the number of bytes in the result,
++ * whether written or not, or a negative value on error.
++ *
++ * Use |DSA_marshal_private_key| instead. */
++OPENSSL_EXPORT int i2d_DSAPrivateKey(const DSA *in, uint8_t **outp);
++
++/* d2i_DSAparams parses ASN.1, DER-encoded, DSA parameters from |len| bytes at
++ * |*inp|. If |out| is not NULL then, on exit, a pointer to the result is in
++ * |*out|. Note that, even if |*out| is already non-NULL on entry, it will not
++ * be written to. Rather, a fresh |DSA| is allocated and the previous one is
++ * freed. On successful exit, |*inp| is advanced past the DER structure. It
++ * returns the result or NULL on error.
++ *
++ * Use |DSA_parse_parameters| instead. */
++OPENSSL_EXPORT DSA *d2i_DSAparams(DSA **out, const uint8_t **inp, long len);
++
++/* i2d_DSAparams marshals DSA parameters from |in| to an ASN.1, DER structure.
++ * If |outp| is not NULL then the result is written to |*outp| and |*outp| is
++ * advanced just past the output. It returns the number of bytes in the result,
++ * whether written or not, or a negative value on error.
++ *
++ * Use |DSA_marshal_parameters| instead. */
++OPENSSL_EXPORT int i2d_DSAparams(const DSA *in, uint8_t **outp);
++
++
+ struct dsa_st {
+   long version;
+-  int write_params;
+   BIGNUM *p;
+   BIGNUM *q; /* == 20 */
+   BIGNUM *g;
+@@ -343,5 +393,8 @@ struct dsa_st {
+ #define DSA_R_MISSING_PARAMETERS 101
+ #define DSA_R_MODULUS_TOO_LARGE 102
+ #define DSA_R_NEED_NEW_SETUP_VALUES 103
++#define DSA_R_BAD_VERSION 104
++#define DSA_R_DECODE_ERROR 105
++#define DSA_R_ENCODE_ERROR 106
+ 
+ #endif  /* OPENSSL_HEADER_DSA_H */
+diff --git a/include/openssl/ec.h b/include/openssl/ec.h
+index 230d395c0..4957066fd 100644
+--- a/include/openssl/ec.h
++++ b/include/openssl/ec.h
+@@ -373,5 +373,8 @@ OPENSSL_EXPORT size_t EC_get_builtin_curves(EC_builtin_curve *out_curves,
+ #define EC_R_WRONG_ORDER 125
+ #define EC_R_BIGNUM_OUT_OF_RANGE 126
+ #define EC_R_WRONG_CURVE_PARAMETERS 127
++#define EC_R_DECODE_ERROR 128
++#define EC_R_ENCODE_ERROR 129
++#define EC_R_GROUP_MISMATCH 130
+ 
+ #endif  /* OPENSSL_HEADER_EC_H */
+diff --git a/include/openssl/ec_key.h b/include/openssl/ec_key.h
+index da96508c6..274235585 100644
+--- a/include/openssl/ec_key.h
++++ b/include/openssl/ec_key.h
+@@ -177,52 +177,26 @@ OPENSSL_EXPORT int EC_KEY_generate_key(EC_KEY *key);
+ 
+ /* Serialisation. */
+ 
+-/* d2i_ECPrivateKey parses an ASN.1, DER-encoded, private key from |len| bytes
+- * at |*inp|. If |out_key| is not NULL then, on exit, a pointer to the result
+- * is in |*out_key|. If |*out_key| is already non-NULL on entry then the result
+- * is written directly into |*out_key|, otherwise a fresh |EC_KEY| is
+- * allocated. However, one should not depend on writing into |*out_key| because
+- * this behaviour is likely to change in the future. On successful exit, |*inp|
+- * is advanced past the DER structure. It returns the result or NULL on
+- * error. */
+-OPENSSL_EXPORT EC_KEY *d2i_ECPrivateKey(EC_KEY **out_key, const uint8_t **inp,
+-                                        long len);
+-
+-/* i2d_ECPrivateKey marshals an EC private key from |key| to an ASN.1, DER
+- * structure. If |outp| is not NULL then the result is written to |*outp| and
+- * |*outp| is advanced just past the output. It returns the number of bytes in
+- * the result, whether written or not, or a negative value on error. */
+-OPENSSL_EXPORT int i2d_ECPrivateKey(const EC_KEY *key, uint8_t **outp);
+-
+-/* d2i_ECParameters parses an ASN.1, DER-encoded, set of EC parameters from
+- * |len| bytes at |*inp|. If |out_key| is not NULL then, on exit, a pointer to
+- * the result is in |*out_key|. If |*out_key| is already non-NULL on entry then
+- * the result is written directly into |*out_key|, otherwise a fresh |EC_KEY|
+- * is allocated. However, one should not depend on writing into |*out_key|
+- * because this behaviour is likely to change in the future. On successful
+- * exit, |*inp| is advanced past the DER structure. It returns the result or
+- * NULL on error. */
+-OPENSSL_EXPORT EC_KEY *d2i_ECParameters(EC_KEY **out_key, const uint8_t **inp,
+-                                        long len);
+-
+-/* i2d_ECParameters marshals EC parameters from |key| to an ASN.1, DER
+- * structure. If |outp| is not NULL then the result is written to |*outp| and
+- * |*outp| is advanced just past the output. It returns the number of bytes in
+- * the result, whether written or not, or a negative value on error. */
+-OPENSSL_EXPORT int i2d_ECParameters(const EC_KEY *key, uint8_t **outp);
+-
+-/* o2i_ECPublicKey parses an EC point from |len| bytes at |*inp| into
+- * |*out_key|. Note that this differs from the d2i format in that |*out_key|
+- * must be non-NULL with a group set. On successful exit, |*inp| is advanced by
+- * |len| bytes. It returns |*out_key| or NULL on error. */
+-OPENSSL_EXPORT EC_KEY *o2i_ECPublicKey(EC_KEY **out_key, const uint8_t **inp,
+-                                       long len);
+-
+-/* i2o_ECPublicKey marshals an EC point from |key|. If |outp| is not NULL then
+- * the result is written to |*outp| and |*outp| is advanced just past the
+- * output. It returns the number of bytes in the result, whether written or
+- * not, or a negative value on error. */
+-OPENSSL_EXPORT int i2o_ECPublicKey(const EC_KEY *key, unsigned char **outp);
++/* EC_KEY_parse_private_key parses a DER-encoded ECPrivateKey structure (RFC
++ * 5915) from |cbs| and advances |cbs|. It returns a newly-allocated |EC_KEY| or
++ * NULL on error. If |group| is non-null, the parameters field of the
++ * ECPrivateKey may be omitted (but must match |group| if present). Otherwise,
++ * the parameters field is required. */
++OPENSSL_EXPORT EC_KEY *EC_KEY_parse_private_key(CBS *cbs,
++                                                const EC_GROUP *group);
++
++/* EC_KEY_marshal_private_key marshals |key| as a DER-encoded ECPrivateKey
++ * structure (RFC 5915) and appends the result to |cbb|. It returns one on
++ * success and zero on failure. |enc_flags| is a combination of |EC_PKEY_*|
++ * values and controls whether corresponding fields are omitted. */
++OPENSSL_EXPORT int EC_KEY_marshal_private_key(CBB *cbb, const EC_KEY *key,
++                                              unsigned enc_flags);
++
++/* EC_KEY_parse_parameters parses a DER-encoded ECParameters structure (RFC
++ * 5480) from |cbs| and advances |cbs|. It returns a newly-allocated |EC_GROUP|
++ * or NULL on error. It supports the namedCurve and specifiedCurve options, but
++ * use of specifiedCurve is deprecated. */
++OPENSSL_EXPORT EC_GROUP *EC_KEY_parse_parameters(CBS *cbs);
+ 
+ 
+ /* ex_data functions.
+@@ -276,6 +250,64 @@ struct ecdsa_method_st {
+ /* EC_KEY_set_asn1_flag does nothing. */
+ OPENSSL_EXPORT void EC_KEY_set_asn1_flag(EC_KEY *key, int flag);
+ 
++/* d2i_ECPrivateKey parses an ASN.1, DER-encoded, private key from |len| bytes
++ * at |*inp|. If |out_key| is not NULL then, on exit, a pointer to the result
++ * is in |*out_key|. Note that, even if |*out_key| is already non-NULL on entry,
++ * it * will not be written to. Rather, a fresh |EC_KEY| is allocated and the
++ * previous * one is freed. On successful exit, |*inp| is advanced past the DER
++ * structure. It returns the result or NULL on error.
++ *
++ * On input, if |*out_key| is non-NULL and has a group configured, the
++ * parameters field may be omitted but must match that group if present.
++ *
++ * Use |EC_KEY_parse_private_key| instead. */
++OPENSSL_EXPORT EC_KEY *d2i_ECPrivateKey(EC_KEY **out_key, const uint8_t **inp,
++                                        long len);
++
++/* i2d_ECPrivateKey marshals an EC private key from |key| to an ASN.1, DER
++ * structure. If |outp| is not NULL then the result is written to |*outp| and
++ * |*outp| is advanced just past the output. It returns the number of bytes in
++ * the result, whether written or not, or a negative value on error.
++ *
++ * Use |EC_KEY_marshal_private_key| instead. */
++OPENSSL_EXPORT int i2d_ECPrivateKey(const EC_KEY *key, uint8_t **outp);
++
++/* d2i_ECParameters parses an ASN.1, DER-encoded, set of EC parameters from
++ * |len| bytes at |*inp|. If |out_key| is not NULL then, on exit, a pointer to
++ * the result is in |*out_key|. Note that, even if |*out_key| is already
++ * non-NULL on entry, it will not be written to. Rather, a fresh |EC_KEY| is
++ * allocated and the previous one is freed. On successful exit, |*inp| is
++ * advanced past the DER structure. It returns the result or NULL on error.
++ *
++ * Use EC_KEY_parse_parameters instead. */
++OPENSSL_EXPORT EC_KEY *d2i_ECParameters(EC_KEY **out_key, const uint8_t **inp,
++                                        long len);
++
++/* i2d_ECParameters marshals EC parameters from |key| to an ASN.1, DER
++ * structure. If |outp| is not NULL then the result is written to |*outp| and
++ * |*outp| is advanced just past the output. It returns the number of bytes in
++ * the result, whether written or not, or a negative value on error.
++ *
++ * Use |OBJ_nid2cbb| and |EC_GROUP_get_curve_name| instead. */
++OPENSSL_EXPORT int i2d_ECParameters(const EC_KEY *key, uint8_t **outp);
++
++/* o2i_ECPublicKey parses an EC point from |len| bytes at |*inp| into
++ * |*out_key|. Note that this differs from the d2i format in that |*out_key|
++ * must be non-NULL with a group set. On successful exit, |*inp| is advanced by
++ * |len| bytes. It returns |*out_key| or NULL on error.
++ *
++ * Use |EC_POINT_oct2point| instead. */
++OPENSSL_EXPORT EC_KEY *o2i_ECPublicKey(EC_KEY **out_key, const uint8_t **inp,
++                                       long len);
++
++/* i2o_ECPublicKey marshals an EC point from |key|. If |outp| is not NULL then
++ * the result is written to |*outp| and |*outp| is advanced just past the
++ * output. It returns the number of bytes in the result, whether written or
++ * not, or a negative value on error.
++ *
++ * Use |EC_POINT_point2cbb| instead. */
++OPENSSL_EXPORT int i2o_ECPublicKey(const EC_KEY *key, unsigned char **outp);
++
+ 
+ #if defined(__cplusplus)
+ }  /* extern C */
+diff --git a/include/openssl/evp.h b/include/openssl/evp.h
+index 4f9426fd4..3db135bbc 100644
+--- a/include/openssl/evp.h
++++ b/include/openssl/evp.h
+@@ -188,35 +188,37 @@ OPENSSL_EXPORT int EVP_PKEY_cmp_parameters(const EVP_PKEY *a,
+ 
+ /* ASN.1 functions */
+ 
+-/* d2i_PrivateKey parses an ASN.1, DER-encoded, private key from |len| bytes at
+- * |*inp|. If |out| is not NULL then, on exit, a pointer to the result is in
+- * |*out|. If |*out| is already non-NULL on entry then the result is written
+- * directly into |*out|, otherwise a fresh |EVP_PKEY| is allocated. However,
+- * one should not depend on writing into |*out| because this behaviour is
+- * likely to change in the future. On successful exit, |*inp| is advanced past
+- * the DER structure. It returns the result or NULL on error. */
+-OPENSSL_EXPORT EVP_PKEY *d2i_PrivateKey(int type, EVP_PKEY **out,
+-                                        const uint8_t **inp, long len);
+-
+-/* d2i_AutoPrivateKey acts the same as |d2i_PrivateKey|, but detects the type
+- * of the private key. */
+-OPENSSL_EXPORT EVP_PKEY *d2i_AutoPrivateKey(EVP_PKEY **out, const uint8_t **inp,
+-                                            long len);
++/* EVP_parse_public_key decodes a DER-encoded SubjectPublicKeyInfo structure
++ * (RFC 5280) from |cbs| and advances |cbs|. It returns a newly-allocated
++ * |EVP_PKEY| or NULL on error.
++ *
++ * The caller must check the type of the parsed public key to ensure it is
++ * suitable and validate other desired key properties such as RSA modulus size
++ * or EC curve. */
++OPENSSL_EXPORT EVP_PKEY *EVP_parse_public_key(CBS *cbs);
+ 
+-/* i2d_PrivateKey marshals a private key from |key| to an ASN.1, DER
+- * structure. If |outp| is not NULL then the result is written to |*outp| and
+- * |*outp| is advanced just past the output. It returns the number of bytes in
+- * the result, whether written or not, or a negative value on error. */
+-OPENSSL_EXPORT int i2d_PrivateKey(const EVP_PKEY *key, uint8_t **outp);
++/* EVP_marshal_public_key marshals |key| as a DER-encoded SubjectPublicKeyInfo
++ * structure (RFC 5280) and appends the result to |cbb|. It returns one on
++ * success and zero on error. */
++OPENSSL_EXPORT int EVP_marshal_public_key(CBB *cbb, const EVP_PKEY *key);
+ 
+-/* i2d_PublicKey marshals a public key from |key| to a type-specific format.
+- * If |outp| is not NULL then the result is written to |*outp| and
+- * |*outp| is advanced just past the output. It returns the number of bytes in
+- * the result, whether written or not, or a negative value on error.
++/* EVP_parse_private_key decodes a DER-encoded PrivateKeyInfo structure (RFC
++ * 5208) from |cbs| and advances |cbs|. It returns a newly-allocated |EVP_PKEY|
++ * or NULL on error.
+  *
+- * RSA keys are serialized as a DER-encoded RSAPublicKey (RFC 3447) structure.
+- * EC keys are serialized as an EC point per SEC 1. */
+-OPENSSL_EXPORT int i2d_PublicKey(EVP_PKEY *key, uint8_t **outp);
++ * The caller must check the type of the parsed private key to ensure it is
++ * suitable and validate other desired key properties such as RSA modulus size
++ * or EC curve.
++ *
++ * A PrivateKeyInfo ends with an optional set of attributes. These are not
++ * processed and so this function will silently ignore any trailing data in the
++ * structure. */
++OPENSSL_EXPORT EVP_PKEY *EVP_parse_private_key(CBS *cbs);
++
++/* EVP_marshal_private_key marshals |key| as a DER-encoded PrivateKeyInfo
++ * structure (RFC 5208) and appends the result to |cbb|. It returns one on
++ * success and zero on error. */
++OPENSSL_EXPORT int EVP_marshal_private_key(CBB *cbb, const EVP_PKEY *key);
+ 
+ 
+ /* Signing */
+@@ -693,6 +695,52 @@ OPENSSL_EXPORT void EVP_MD_do_all_sorted(void (*callback)(const EVP_MD *cipher,
+                                                           void *arg),
+                                          void *arg);
+ 
++/* i2d_PrivateKey marshals a private key from |key| to an ASN.1, DER
++ * structure. If |outp| is not NULL then the result is written to |*outp| and
++ * |*outp| is advanced just past the output. It returns the number of bytes in
++ * the result, whether written or not, or a negative value on error.
++ *
++ * RSA keys are serialized as a DER-encoded RSAPublicKey (RFC 3447) structure.
++ * EC keys are serialized as a DER-encoded ECPrivateKey (RFC 5915) structure.
++ *
++ * Use |RSA_marshal_private_key| or |EC_marshal_private_key| instead. */
++OPENSSL_EXPORT int i2d_PrivateKey(const EVP_PKEY *key, uint8_t **outp);
++
++/* i2d_PublicKey marshals a public key from |key| to a type-specific format.
++ * If |outp| is not NULL then the result is written to |*outp| and
++ * |*outp| is advanced just past the output. It returns the number of bytes in
++ * the result, whether written or not, or a negative value on error.
++ *
++ * RSA keys are serialized as a DER-encoded RSAPublicKey (RFC 3447) structure.
++ * EC keys are serialized as an EC point per SEC 1.
++ *
++ * Use |RSA_marshal_public_key| or |EC_POINT_point2cbb| instead. */
++OPENSSL_EXPORT int i2d_PublicKey(EVP_PKEY *key, uint8_t **outp);
++
++/* d2i_PrivateKey parses an ASN.1, DER-encoded, private key from |len| bytes at
++ * |*inp|. If |out| is not NULL then, on exit, a pointer to the result is in
++ * |*out|. If |*out| is already non-NULL on entry then the result is written
++ * directly into |*out|, otherwise a fresh |EVP_PKEY| is allocated. However,
++ * one should not depend on writing into |*out| because this behaviour is
++ * likely to change in the future. On successful exit, |*inp| is advanced past
++ * the DER structure. It returns the result or NULL on error.
++ *
++ * This function tries to detect one of several formats. Instead, use
++ * |EVP_parse_private_key| for a PrivateKeyInfo, |RSA_parse_private_key| for an
++ * RSAPrivateKey, and |EC_parse_private_key| for an ECPrivateKey. */
++OPENSSL_EXPORT EVP_PKEY *d2i_PrivateKey(int type, EVP_PKEY **out,
++                                        const uint8_t **inp, long len);
++
++/* d2i_AutoPrivateKey acts the same as |d2i_PrivateKey|, but detects the type
++ * of the private key.
++ *
++ * This function tries to detect one of several formats. Instead, use
++ * |EVP_parse_private_key| for a PrivateKeyInfo, |RSA_parse_private_key| for an
++ * RSAPrivateKey, and |EC_parse_private_key| for an ECPrivateKey. */
++OPENSSL_EXPORT EVP_PKEY *d2i_AutoPrivateKey(EVP_PKEY **out, const uint8_t **inp,
++                                            long len);
++
++
+ /* Private functions */
+ 
+ /* EVP_PKEY_asn1_find returns the ASN.1 method table for the given |nid|, which
+@@ -780,5 +828,6 @@ struct evp_pkey_st {
+ #define EVP_R_PARAMETER_ENCODING_ERROR 152
+ #define EVP_R_UNSUPPORTED_PUBLIC_KEY_TYPE 153
+ #define EVP_R_UNSUPPORTED_SIGNATURE_TYPE 154
++#define EVP_R_ENCODE_ERROR 155
+ 
+ #endif  /* OPENSSL_HEADER_EVP_H */
+diff --git a/include/openssl/pem.h b/include/openssl/pem.h
+index a6687a69c..c233a5018 100644
+--- a/include/openssl/pem.h
++++ b/include/openssl/pem.h
+@@ -129,7 +129,6 @@ extern "C" {
+ #define PEM_STRING_DSAPARAMS	"DSA PARAMETERS"
+ #define PEM_STRING_ECDSA_PUBLIC "ECDSA PUBLIC KEY"
+ #define PEM_STRING_ECPRIVATEKEY	"EC PRIVATE KEY"
+-#define PEM_STRING_PARAMETERS	"PARAMETERS"
+ #define PEM_STRING_CMS		"CMS"
+ 
+   /* Note that this structure is initialised by PEM_SealInit and cleaned up
+@@ -477,10 +476,6 @@ OPENSSL_EXPORT EVP_PKEY *d2i_PKCS8PrivateKey_fp(FILE *fp, EVP_PKEY **x, pem_pass
+ 
+ OPENSSL_EXPORT int PEM_write_PKCS8PrivateKey(FILE *fp,EVP_PKEY *x,const EVP_CIPHER *enc, char *kstr,int klen, pem_password_cb *cd, void *u);
+ 
+-OPENSSL_EXPORT EVP_PKEY *PEM_read_bio_Parameters(BIO *bp, EVP_PKEY **x);
+-OPENSSL_EXPORT int PEM_write_bio_Parameters(BIO *bp, EVP_PKEY *x);
+-
+-
+ OPENSSL_EXPORT EVP_PKEY *b2i_PrivateKey(const unsigned char **in, long length);
+ OPENSSL_EXPORT EVP_PKEY *b2i_PublicKey(const unsigned char **in, long length);
+ OPENSSL_EXPORT EVP_PKEY *b2i_PrivateKey_bio(BIO *in);
+diff --git a/include/openssl/ssl.h b/include/openssl/ssl.h
+index 54c5a221b..41813b2c6 100644
+--- a/include/openssl/ssl.h
++++ b/include/openssl/ssl.h
+@@ -2600,12 +2600,15 @@ OPENSSL_EXPORT size_t SSL_get_key_block_len(const SSL *ssl);
+ OPENSSL_EXPORT int SSL_generate_key_block(const SSL *ssl, uint8_t *out,
+                                           size_t out_len);
+ 
+-/* SSL_get_read_sequence returns the expected sequence number of the next
+- * incoming record in the current epoch. It always returns zero in DTLS. */
++/* SSL_get_read_sequence returns, in TLS, the expected sequence number of the
++ * next incoming record in the current epoch. In DTLS, it returns the maximum
++ * sequence number received in the current epoch and includes the epoch number
++ * in the two most significant bytes. */
+ OPENSSL_EXPORT uint64_t SSL_get_read_sequence(const SSL *ssl);
+ 
+ /* SSL_get_write_sequence returns the sequence number of the next outgoing
+- * record in the current epoch. */
++ * record in the current epoch. In DTLS, it includes the epoch number in the
++ * two most significant bytes. */
+ OPENSSL_EXPORT uint64_t SSL_get_write_sequence(const SSL *ssl);
+ 
+ 
+diff --git a/ssl/ssl_lib.c b/ssl/ssl_lib.c
+index 542dc17e4..b72601172 100644
+--- a/ssl/ssl_lib.c
++++ b/ssl/ssl_lib.c
+@@ -181,12 +181,21 @@ int SSL_library_init(void) {
+   return 1;
+ }
+ 
+-static uint32_t ssl_session_hash(const SSL_SESSION *a) {
++static uint32_t ssl_session_hash(const SSL_SESSION *sess) {
++  const uint8_t *session_id = sess->session_id;
++
++  uint8_t tmp_storage[sizeof(uint32_t)];
++  if (sess->session_id_length < sizeof(tmp_storage)) {
++    memset(tmp_storage, 0, sizeof(tmp_storage));
++    memcpy(tmp_storage, sess->session_id, sess->session_id_length);
++    session_id = tmp_storage;
++  }
++
+   uint32_t hash =
+-      ((uint32_t)a->session_id[0]) |
+-      ((uint32_t)a->session_id[1] << 8) |
+-      ((uint32_t)a->session_id[2] << 16) |
+-      ((uint32_t)a->session_id[3] << 24);
++      ((uint32_t)session_id[0]) |
++      ((uint32_t)session_id[1] << 8) |
++      ((uint32_t)session_id[2] << 16) |
++      ((uint32_t)session_id[3] << 24);
+ 
+   return hash;
+ }
+@@ -2545,19 +2554,29 @@ int SSL_get_ivs(const SSL *ssl, const uint8_t **out_read_iv,
+ }
+ 
+ static uint64_t be_to_u64(const uint8_t in[8]) {
+-  return (((uint64_t)in[7]) << 56) | (((uint64_t)in[6]) << 48) |
+-         (((uint64_t)in[5]) << 40) | (((uint64_t)in[4]) << 32) |
+-         (((uint64_t)in[3]) << 24) | (((uint64_t)in[2]) << 16) |
+-         (((uint64_t)in[1]) << 8) | ((uint64_t)in[0]);
++  return (((uint64_t)in[0]) << 56) | (((uint64_t)in[1]) << 48) |
++         (((uint64_t)in[2]) << 40) | (((uint64_t)in[3]) << 32) |
++         (((uint64_t)in[4]) << 24) | (((uint64_t)in[5]) << 16) |
++         (((uint64_t)in[6]) << 8) | ((uint64_t)in[7]);
+ }
+ 
+ uint64_t SSL_get_read_sequence(const SSL *ssl) {
+   /* TODO(davidben): Internally represent sequence numbers as uint64_t. */
++  if (SSL_IS_DTLS(ssl)) {
++    /* max_seq_num already includes the epoch. */
++    assert(ssl->d1->r_epoch == (ssl->d1->bitmap.max_seq_num >> 48));
++    return ssl->d1->bitmap.max_seq_num;
++  }
+   return be_to_u64(ssl->s3->read_sequence);
+ }
+ 
+ uint64_t SSL_get_write_sequence(const SSL *ssl) {
+-  return be_to_u64(ssl->s3->write_sequence);
++  uint64_t ret = be_to_u64(ssl->s3->write_sequence);
++  if (SSL_IS_DTLS(ssl)) {
++    assert((ret >> 48) == 0);
++    ret |= ((uint64_t)ssl->d1->w_epoch) << 48;
++  }
++  return ret;
+ }
+ 
+ uint8_t SSL_get_server_key_exchange_hash(const SSL *ssl) {
 diff --git a/ssl/ssl_test.cc b/ssl/ssl_test.cc
-index bef88fb59..f91542dce 100644
+index bef88fb59..ed1d3c7da 100644
 --- a/ssl/ssl_test.cc
 +++ b/ssl/ssl_test.cc
-@@ -39,215 +39,178 @@ struct ExpectedCipher {
+@@ -25,7 +25,9 @@
+ #include <openssl/bio.h>
+ #include <openssl/crypto.h>
+ #include <openssl/err.h>
++#include <openssl/pem.h>
+ #include <openssl/ssl.h>
++#include <openssl/x509.h>
+ 
+ #include "test/scoped_types.h"
+ #include "../crypto/test/test_util.h"
+@@ -39,215 +41,178 @@ struct ExpectedCipher {
  struct CipherTest {
    // The rule string to apply.
    const char *rule;
@@ -1104,7 +5430,7 @@ index bef88fb59..f91542dce 100644
  };
  
  static const char *kBadRules[] = {
-@@ -271,7 +234,6 @@ static const char *kBadRules[] = {
+@@ -271,7 +236,6 @@ static const char *kBadRules[] = {
    "[ECDHE-RSA-CHACHA20-POLY1305|ECDHE-RSA-AES128-GCM-SHA256]:!FOO",
    "[ECDHE-RSA-CHACHA20-POLY1305|ECDHE-RSA-AES128-GCM-SHA256]:-FOO",
    "[ECDHE-RSA-CHACHA20-POLY1305|ECDHE-RSA-AES128-GCM-SHA256]:@STRENGTH",
@@ -1112,7 +5438,7 @@ index bef88fb59..f91542dce 100644
  };
  
  static const char *kMustNotIncludeNull[] = {
-@@ -288,7 +250,6 @@ static const char *kMustNotIncludeNull[] = {
+@@ -288,7 +252,6 @@ static const char *kMustNotIncludeNull[] = {
    "SSLv3",
    "TLSv1",
    "TLSv1.2",
@@ -1120,7 +5446,7 @@ index bef88fb59..f91542dce 100644
  };
  
  static void PrintCipherPreferenceList(ssl_cipher_preference_list_st *list) {
-@@ -311,36 +272,35 @@ static void PrintCipherPreferenceList(ssl_cipher_preference_list_st *list) {
+@@ -311,36 +274,35 @@ static void PrintCipherPreferenceList(ssl_cipher_preference_list_st *list) {
    }
  }
  
@@ -1170,7 +5496,7 @@ index bef88fb59..f91542dce 100644
    return true;
  }
  
-@@ -363,26 +323,26 @@ static bool TestRuleDoesNotIncludeNull(const char *rule) {
+@@ -363,26 +325,26 @@ static bool TestRuleDoesNotIncludeNull(const char *rule) {
  }
  
  static bool TestCipherRules() {
@@ -1203,4 +5529,174 @@ index bef88fb59..f91542dce 100644
 +    if (!TestRuleDoesNotIncludeNull(rule)) {
        return false;
      }
+   }
+@@ -1018,6 +980,158 @@ static bool TestInternalSessionCache() {
+   return true;
+ }
+ 
++static uint16_t EpochFromSequence(uint64_t seq) {
++  return static_cast<uint16_t>(seq >> 48);
++}
++
++static ScopedX509 GetTestCertificate() {
++  static const char kCertPEM[] =
++      "-----BEGIN CERTIFICATE-----\n"
++      "MIICWDCCAcGgAwIBAgIJAPuwTC6rEJsMMA0GCSqGSIb3DQEBBQUAMEUxCzAJBgNV\n"
++      "BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX\n"
++      "aWRnaXRzIFB0eSBMdGQwHhcNMTQwNDIzMjA1MDQwWhcNMTcwNDIyMjA1MDQwWjBF\n"
++      "MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50\n"
++      "ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKB\n"
++      "gQDYK8imMuRi/03z0K1Zi0WnvfFHvwlYeyK9Na6XJYaUoIDAtB92kWdGMdAQhLci\n"
++      "HnAjkXLI6W15OoV3gA/ElRZ1xUpxTMhjP6PyY5wqT5r6y8FxbiiFKKAnHmUcrgfV\n"
++      "W28tQ+0rkLGMryRtrukXOgXBv7gcrmU7G1jC2a7WqmeI8QIDAQABo1AwTjAdBgNV\n"
++      "HQ4EFgQUi3XVrMsIvg4fZbf6Vr5sp3Xaha8wHwYDVR0jBBgwFoAUi3XVrMsIvg4f\n"
++      "Zbf6Vr5sp3Xaha8wDAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQUFAAOBgQA76Hht\n"
++      "ldY9avcTGSwbwoiuIqv0jTL1fHFnzy3RHMLDh+Lpvolc5DSrSJHCP5WuK0eeJXhr\n"
++      "T5oQpHL9z/cCDLAKCKRa4uV0fhEdOWBqyR9p8y5jJtye72t6CuFUV5iqcpF4BH4f\n"
++      "j2VNHwsSrJwkD4QUGlUtH7vwnQmyCFxZMmWAJg==\n"
++      "-----END CERTIFICATE-----\n";
++  ScopedBIO bio(
++      BIO_new_mem_buf(const_cast<char *>(kCertPEM), strlen(kCertPEM)));
++  return ScopedX509(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
++}
++
++static ScopedEVP_PKEY GetTestKey() {
++  static const char kKeyPEM[] =
++      "-----BEGIN RSA PRIVATE KEY-----\n"
++      "MIICXgIBAAKBgQDYK8imMuRi/03z0K1Zi0WnvfFHvwlYeyK9Na6XJYaUoIDAtB92\n"
++      "kWdGMdAQhLciHnAjkXLI6W15OoV3gA/ElRZ1xUpxTMhjP6PyY5wqT5r6y8FxbiiF\n"
++      "KKAnHmUcrgfVW28tQ+0rkLGMryRtrukXOgXBv7gcrmU7G1jC2a7WqmeI8QIDAQAB\n"
++      "AoGBAIBy09Fd4DOq/Ijp8HeKuCMKTHqTW1xGHshLQ6jwVV2vWZIn9aIgmDsvkjCe\n"
++      "i6ssZvnbjVcwzSoByhjN8ZCf/i15HECWDFFh6gt0P5z0MnChwzZmvatV/FXCT0j+\n"
++      "WmGNB/gkehKjGXLLcjTb6dRYVJSCZhVuOLLcbWIV10gggJQBAkEA8S8sGe4ezyyZ\n"
++      "m4e9r95g6s43kPqtj5rewTsUxt+2n4eVodD+ZUlCULWVNAFLkYRTBCASlSrm9Xhj\n"
++      "QpmWAHJUkQJBAOVzQdFUaewLtdOJoPCtpYoY1zd22eae8TQEmpGOR11L6kbxLQsk\n"
++      "aMly/DOnOaa82tqAGTdqDEZgSNmCeKKknmECQAvpnY8GUOVAubGR6c+W90iBuQLj\n"
++      "LtFp/9ihd2w/PoDwrHZaoUYVcT4VSfJQog/k7kjE4MYXYWL8eEKg3WTWQNECQQDk\n"
++      "104Wi91Umd1PzF0ijd2jXOERJU1wEKe6XLkYYNHWQAe5l4J4MWj9OdxFXAxIuuR/\n"
++      "tfDwbqkta4xcux67//khAkEAvvRXLHTaa6VFzTaiiO8SaFsHV3lQyXOtMrBpB5jd\n"
++      "moZWgjHvB2W9Ckn7sDqsPB+U2tyX0joDdQEyuiMECDY8oQ==\n"
++      "-----END RSA PRIVATE KEY-----\n";
++  ScopedBIO bio(BIO_new_mem_buf(const_cast<char *>(kKeyPEM), strlen(kKeyPEM)));
++  return ScopedEVP_PKEY(
++      PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
++}
++
++static bool TestSequenceNumber(bool dtls) {
++  ScopedSSL_CTX client_ctx(SSL_CTX_new(dtls ? DTLS_method() : TLS_method()));
++  ScopedSSL_CTX server_ctx(SSL_CTX_new(dtls ? DTLS_method() : TLS_method()));
++  if (!client_ctx || !server_ctx) {
++    return false;
++  }
++
++  ScopedX509 cert = GetTestCertificate();
++  ScopedEVP_PKEY key = GetTestKey();
++  if (!cert || !key ||
++      !SSL_CTX_use_certificate(server_ctx.get(), cert.get()) ||
++      !SSL_CTX_use_PrivateKey(server_ctx.get(), key.get())) {
++    return false;
++  }
++
++  // Create a client and server connected to each other.
++  ScopedSSL client(SSL_new(client_ctx.get())), server(SSL_new(server_ctx.get()));
++  if (!client || !server) {
++    return false;
++  }
++  SSL_set_connect_state(client.get());
++  SSL_set_accept_state(server.get());
++
++  BIO *bio1, *bio2;
++  if (!BIO_new_bio_pair(&bio1, 0, &bio2, 0)) {
++    return false;
++  }
++  // SSL_set_bio takes ownership.
++  SSL_set_bio(client.get(), bio1, bio1);
++  SSL_set_bio(server.get(), bio2, bio2);
++
++  // Drive both their handshakes to completion.
++  for (;;) {
++    int client_ret = SSL_do_handshake(client.get());
++    int client_err = SSL_get_error(client.get(), client_ret);
++    if (client_err != SSL_ERROR_NONE &&
++        client_err != SSL_ERROR_WANT_READ &&
++        client_err != SSL_ERROR_WANT_WRITE) {
++      fprintf(stderr, "Client error: %d\n", client_err);
++      return false;
++    }
++
++    int server_ret = SSL_do_handshake(server.get());
++    int server_err = SSL_get_error(server.get(), server_ret);
++    if (server_err != SSL_ERROR_NONE &&
++        server_err != SSL_ERROR_WANT_READ &&
++        server_err != SSL_ERROR_WANT_WRITE) {
++      fprintf(stderr, "Server error: %d\n", server_err);
++      return false;
++    }
++
++    if (client_ret == 1 && server_ret == 1) {
++      break;
++    }
++  }
++
++  uint64_t client_read_seq = SSL_get_read_sequence(client.get());
++  uint64_t client_write_seq = SSL_get_write_sequence(client.get());
++  uint64_t server_read_seq = SSL_get_read_sequence(server.get());
++  uint64_t server_write_seq = SSL_get_write_sequence(server.get());
++
++  if (dtls) {
++    // Both client and server must be at epoch 1.
++    if (EpochFromSequence(client_read_seq) != 1 ||
++        EpochFromSequence(client_write_seq) != 1 ||
++        EpochFromSequence(server_read_seq) != 1 ||
++        EpochFromSequence(server_write_seq) != 1) {
++      fprintf(stderr, "Bad epochs.\n");
++      return false;
++    }
++
++    // The next record to be written should exceed the largest received.
++    if (client_write_seq <= server_read_seq ||
++        server_write_seq <= client_read_seq) {
++      fprintf(stderr, "Inconsistent sequence numbers.\n");
++      return false;
++    }
++  } else {
++    // The next record to be written should equal the next to be received.
++    if (client_write_seq != server_read_seq ||
++        server_write_seq != client_write_seq) {
++      fprintf(stderr, "Inconsistent sequence numbers.\n");
++      return false;
++    }
++  }
++
++  // Send a record from client to server.
++  uint8_t byte = 0;
++  if (SSL_write(client.get(), &byte, 1) != 1 ||
++      SSL_read(server.get(), &byte, 1) != 1) {
++    fprintf(stderr, "Could not send byte.\n");
++    return false;
++  }
++
++  // The client write and server read sequence numbers should have incremented.
++  if (client_write_seq + 1 != SSL_get_write_sequence(client.get()) ||
++      server_read_seq + 1 != SSL_get_read_sequence(server.get())) {
++    fprintf(stderr, "Sequence numbers did not increment.\n");\
++    return false;
++  }
++
++  return true;
++}
++
+ int main() {
+   CRYPTO_library_init();
+ 
+@@ -1039,7 +1153,9 @@ int main() {
+       !TestCipherGetRFCName() ||
+       !TestPaddingExtension() ||
+       !TestClientCAList() ||
+-      !TestInternalSessionCache()) {
++      !TestInternalSessionCache() ||
++      !TestSequenceNumber(false /* TLS */) ||
++      !TestSequenceNumber(true /* DTLS */)) {
+     ERR_print_errors_fp(stderr);
+     return 1;
    }
