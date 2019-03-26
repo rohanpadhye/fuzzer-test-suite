@@ -6,12 +6,14 @@
 
 [ ! -e libpng-1.2.56.tar.gz ] && wget https://vorboss.dl.sourceforge.net/project/libpng/libpng12/older-releases/1.2.56/libpng-1.2.56.tar.gz
 [ ! -e libpng-1.2.56 ] && tar xf libpng-1.2.56.tar.gz
-cp $(dirname $0)/state.patch .
+
+
+export WAYPOINTS_STATE_STRUCT_NAME=png_struct_def
+export WAYPOINTS_STATE_STRUCT_FIELD=12
 
 build_lib() {
   rm -rf BUILD
   cp -rf libpng-1.2.56 BUILD
-  (cd BUILD && patch -p1 < ../state.patch)
   (cd BUILD && ./configure &&  make -j)
 }
 
