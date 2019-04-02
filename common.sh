@@ -86,7 +86,7 @@ build_afl_custom() {
 build_gcov() {
   $CC $CFLAGS -c -w $AFL_SRC/llvm_mode/afl-llvm-rt.o.c
   clang++ $CXXFLAGS -std=c++11 -O2 -c ${LIBFUZZER_SRC}/afl/afl_driver.cpp -I$LIBFUZZER_SRC
-  ar r $LIB_FUZZING_ENGINE afl-llvm-rt.o.o
+  ar r $LIB_FUZZING_ENGINE afl_driver.o afl-llvm-rt.o.o
   rm *.o
 }
 
